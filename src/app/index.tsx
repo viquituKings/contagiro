@@ -1,0 +1,713 @@
+import React, { useState, useCallback } from 'react';
+import {
+  StyleSheet,
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  useColorScheme,
+  RefreshControl,
+  SafeAreaView,
+  Modal,
+  TextInput,
+  Alert,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { StorageService } from '@/services/storage';
+import { Calculations } from '@/services/calculations';
+import { Vehicle, Refueling, MaintenanceItem } from '@/types/vehicle';
+
+export default function DashboardScreen() {
+  const router = useRouter();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === 'dark';
+
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [refuelings, setRefuelings] = useState<Refueling[]>([]);
+  const [maintenances, setMaintenances] = useState<MaintenanceItem[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Modal para atualizar odômetro rápido
+  const [odometerModalVisible, setOdometerModalVisible] = useState(false);
+  const [newOdometerInput, setNewOdometerInput] = useState('');
+
+  const loadData = async () => {
+    try {
+      await StorageService.init();
+      const currentVehicle = await StorageService.getActiveVehicle();
+      setVehicle(currentVehicle);
+
+      if (currentVehicle) {
+        const [refData, mainData] = await Promise.all([
+          StorageService.getRefuelings(currentVehicle.id),
+          StorageService.getMaintenances(currentVehicle.id),
+        ]);
+        setRefuelings(refData);
+        setMaintenances(mainData);
+        setNewOdometerInput(String(currentVehicle.currentOdometer));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [])
+  );
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  };
+
+  const handleUpdateOdometer = async () => {
+    if (!vehicle) return;
+    const km = parseInt(newOdometerInput, 10);
+    if (isNaN(km) || km < vehicle.currentOdometer) {
+      Alert.alert(
+        'Atenção',
+        `O odômetro deve ser um número válido e maior ou igual ao atual (${vehicle.currentOdometer.toLocaleString('pt-BR')} km).`
+      );
+      return;
+    }
+    const updated = { ...vehicle, currentOdometer: km };
+    await StorageService.saveVehicle(updated);
+    setVehicle(updated);
+    setOdometerModalVisible(false);
+    await loadData();
+  };
+
+  const stats = vehicle
+    ? Calculations.getVehicleStats(vehicle, refuelings, maintenances)
+    : null;
+  const alerts = vehicle
+    ? Calculations.getMaintenanceAlerts(vehicle.currentOdometer, maintenances)
+    : [];
+  const forecast = vehicle
+    ? Calculations.calculateFuelForecast(vehicle, refuelings, maintenances)
+    : null;
+
+  const urgentAlerts = alerts.filter((a) => a.status === 'vencido' || a.status === 'proximo');
+  const lastRefueling = refuelings[0];
+
+  const theme = {
+    bg: isDark ? '#090D16' : '#F8FAFC',
+    card: isDark ? '#141D2E' : '#FFFFFF',
+    cardBorder: isDark ? '#1E2D44' : '#E2E8F0',
+    text: isDark ? '#F8FAFC' : '#0F172A',
+    textMuted: isDark ? '#94A3B8' : '#64748B',
+    accent: '#10B981', // Verde Esmeralda
+    accentLight: isDark ? 'rgba(16, 185, 129, 0.15)' : 'rgba(16, 185, 129, 0.1)',
+    blue: '#3B82F6',
+    amber: '#F59E0B',
+    amberLight: isDark ? 'rgba(245, 158, 11, 0.15)' : 'rgba(245, 158, 11, 0.1)',
+    red: '#EF4444',
+    redLight: isDark ? 'rgba(239, 68, 68, 0.15)' : 'rgba(239, 68, 68, 0.1)',
+  };
+
+  return (
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContainer}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        {/* HEADER SUPERIOR */}
+        <View style={styles.header}>
+          <View>
+            <Text style={[styles.brandTitle, { color: theme.accent }]}>ContaGiro</Text>
+            <Text style={[styles.brandSubtitle, { color: theme.textMuted }]}>
+              Controle Inteligente & Previsão
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.garageBtn, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+            onPress={() => router.push('/garagem')}
+          >
+            <Ionicons name="car-sport" size={18} color={theme.accent} />
+            <Text style={[styles.garageBtnText, { color: theme.text }]}>Garagem</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* CARD DO VEÍCULO ATIVO */}
+        {vehicle && (
+          <View style={[styles.vehicleCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <View style={styles.vehicleHeaderRow}>
+              <View style={styles.vehicleIconBadge}>
+                <Ionicons name="speedometer" size={24} color="#10B981" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.vehicleName, { color: theme.text }]}>{vehicle.name}</Text>
+                <Text style={[styles.vehicleModel, { color: theme.textMuted }]}>
+                  {vehicle.model} • {vehicle.year}
+                </Text>
+              </View>
+              <View style={styles.plateBadge}>
+                <Text style={styles.plateText}>{vehicle.plate}</Text>
+              </View>
+            </View>
+
+            {/* ODOMETRO CLICAVEL */}
+            <TouchableOpacity
+              style={[styles.odometerBox, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}
+              onPress={() => setOdometerModalVisible(true)}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="navigate-circle-outline" size={20} color={theme.accent} />
+                <Text style={[styles.odometerLabel, { color: theme.textMuted }]}>Odômetro Atual:</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Text style={[styles.odometerValue, { color: theme.text }]}>
+                  {vehicle.currentOdometer.toLocaleString('pt-BR')} km
+                </Text>
+                <Ionicons name="pencil" size={14} color={theme.textMuted} />
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* MÉTRICAS PRINCIPAIS (GAUGES & MÉDIAS) */}
+        {stats && (
+          <View style={styles.metricsGrid}>
+            {/* Card Média Consumo */}
+            <View style={[styles.metricCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+              <View style={styles.metricHeader}>
+                <Text style={[styles.metricLabel, { color: theme.textMuted }]}>Média de Consumo</Text>
+                <View style={[styles.iconCircle, { backgroundColor: theme.accentLight }]}>
+                  <Ionicons name="leaf-outline" size={16} color={theme.accent} />
+                </View>
+              </View>
+              <Text style={[styles.metricBigValue, { color: theme.accent }]}>
+                {stats.averageConsumption} <Text style={styles.metricUnit}>km/L</Text>
+              </Text>
+              <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                {stats.bestConsumption ? `Melhor: ${stats.bestConsumption} km/L` : 'Baseado em tanques cheios'}
+              </Text>
+            </View>
+
+            {/* Card Custo por KM */}
+            <View style={[styles.metricCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+              <View style={styles.metricHeader}>
+                <Text style={[styles.metricLabel, { color: theme.textMuted }]}>Custo Médio / km</Text>
+                <View style={[styles.iconCircle, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
+                  <Ionicons name="cash-outline" size={16} color={theme.blue} />
+                </View>
+              </View>
+              <Text style={[styles.metricBigValue, { color: theme.blue }]}>
+                R$ {stats.averageCostPerKm.toFixed(2)} <Text style={styles.metricUnit}>/km</Text>
+              </Text>
+              <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                Combustível rodado
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* ATALHOS RÁPIDOS */}
+        <View style={styles.actionRow}>
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#10B981' }]}
+            onPress={() => router.push('/abastecimentos')}
+          >
+            <Ionicons name="water" size={20} color="#FFFFFF" />
+            <Text style={styles.actionBtnText}>+ Abastecer</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#3B82F6' }]}
+            onPress={() => router.push('/manutencoes')}
+          >
+            <Ionicons name="build" size={18} color="#FFFFFF" />
+            <Text style={styles.actionBtnText}>+ Manutenção</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#8B5CF6' }]}
+            onPress={() => router.push('/previsao')}
+          >
+            <Ionicons name="calculator" size={18} color="#FFFFFF" />
+            <Text style={styles.actionBtnText}>Calc. Flex</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* ALERTA DE PREVISÃO INTELIGENTE */}
+        {forecast && (
+          <TouchableOpacity
+            style={[styles.forecastBanner, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+            onPress={() => router.push('/previsao')}
+          >
+            <View style={styles.forecastHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="trending-up" size={20} color="#10B981" />
+                <Text style={[styles.forecastTitle, { color: theme.text }]}>Previsão para 30 Dias</Text>
+              </View>
+              <View style={styles.tagBadge}>
+                <Text style={styles.tagBadgeText}>~{forecast.averageDailyKm} km/dia</Text>
+              </View>
+            </View>
+            <View style={styles.forecastRow}>
+              <View>
+                <Text style={[styles.forecastLabel, { color: theme.textMuted }]}>Custo Estimado Total:</Text>
+                <Text style={[styles.forecastAmount, { color: theme.accent }]}>
+                  R$ {forecast.totalProjectedCost30Days.toFixed(2)}
+                </Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={[styles.forecastLabel, { color: theme.textMuted }]}>Combustível:</Text>
+                <Text style={[styles.forecastSubAmount, { color: theme.text }]}>
+                  R$ {forecast.projected30DaysCost.toFixed(2)}
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+        )}
+
+        {/* ALERTAS PREVENTIVOS URGENTES */}
+        {urgentAlerts.length > 0 && (
+          <View style={styles.sectionContainer}>
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>Alertas de Revisão</Text>
+              <TouchableOpacity onPress={() => router.push('/manutencoes')}>
+                <Text style={[styles.sectionLink, { color: theme.accent }]}>Ver todas</Text>
+              </TouchableOpacity>
+            </View>
+
+            {urgentAlerts.slice(0, 2).map((alert, index) => {
+              const isVencido = alert.status === 'vencido';
+              return (
+                <View
+                  key={index}
+                  style={[
+                    styles.alertCard,
+                    {
+                      backgroundColor: isVencido ? theme.redLight : theme.amberLight,
+                      borderColor: isVencido ? theme.red : theme.amber,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name={isVencido ? 'alert-circle' : 'warning-outline'}
+                    size={22}
+                    color={isVencido ? theme.red : theme.amber}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.alertTitle, { color: theme.text }]}>{alert.title}</Text>
+                    <Text style={[styles.alertDesc, { color: theme.textMuted }]}>
+                      {isVencido
+                        ? `Atrasado há ${Math.abs(alert.kmRemaining || 0).toLocaleString('pt-BR')} km!`
+                        : `Atenção: faltam apenas ${alert.kmRemaining?.toLocaleString('pt-BR')} km`}
+                    </Text>
+                  </View>
+                  <Text style={[styles.alertCost, { color: theme.text }]}>
+                    ~R$ {alert.estimatedCost}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* ÚLTIMO ABASTECIMENTO REGISTRADO */}
+        {lastRefueling && (
+          <View style={styles.sectionContainer}>
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>Último Abastecimento</Text>
+              <TouchableOpacity onPress={() => router.push('/abastecimentos')}>
+                <Text style={[styles.sectionLink, { color: theme.accent }]}>Histórico</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.historyCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+              <View style={styles.historyRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <View style={[styles.fuelIconBadge, { backgroundColor: theme.accentLight }]}>
+                    <Ionicons name="water" size={18} color={theme.accent} />
+                  </View>
+                  <View>
+                    <Text style={[styles.historyTitle, { color: theme.text }]}>
+                      {lastRefueling.fuelType.toUpperCase()} • {lastRefueling.liters.toFixed(2)} L
+                    </Text>
+                    <Text style={[styles.historySubtitle, { color: theme.textMuted }]}>
+                      {lastRefueling.date} • {lastRefueling.odometer.toLocaleString('pt-BR')} km
+                    </Text>
+                  </View>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[styles.historyAmount, { color: theme.text }]}>
+                    R$ {lastRefueling.totalAmount.toFixed(2)}
+                  </Text>
+                  {lastRefueling.consumptionKmPerLiter && (
+                    <Text style={[styles.historyKmPerLiter, { color: theme.accent }]}>
+                      {lastRefueling.consumptionKmPerLiter} km/L
+                    </Text>
+                  )}
+                </View>
+              </View>
+            </View>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* MODAL PARA ATUALIZAR ODÔMETRO */}
+      <Modal visible={odometerModalVisible} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>Atualizar Odômetro</Text>
+            <Text style={[styles.modalDesc, { color: theme.textMuted }]}>
+              Insira a quilometragem atual do painel do seu veículo para atualizar as previsões e alertas:
+            </Text>
+
+            <TextInput
+              style={[styles.modalInput, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+              keyboardType="numeric"
+              value={newOdometerInput}
+              onChangeText={setNewOdometerInput}
+              placeholder="Ex: 38450"
+              placeholderTextColor={theme.textMuted}
+            />
+
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity
+                style={[styles.modalBtnCancel, { borderColor: theme.cardBorder }]}
+                onPress={() => setOdometerModalVisible(false)}
+              >
+                <Text style={{ color: theme.textMuted, fontWeight: '600' }}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtnConfirm, { backgroundColor: theme.accent }]}
+                onPress={handleUpdateOdometer}
+              >
+                <Text style={{ color: '#FFFFFF', fontWeight: 'bold' }}>Salvar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+  },
+  scrollContainer: {
+    padding: 16,
+    paddingBottom: 40,
+    gap: 16,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  brandTitle: {
+    fontSize: 26,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+  },
+  brandSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  garageBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  garageBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  vehicleCard: {
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 14,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 2,
+  },
+  vehicleHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  vehicleIconBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  vehicleName: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  vehicleModel: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  plateBadge: {
+    backgroundColor: '#0F172A',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  plateText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+    fontSize: 12,
+    letterSpacing: 1,
+  },
+  odometerBox: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  odometerLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  odometerValue: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  metricsGrid: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  metricCard: {
+    flex: 1,
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 8,
+  },
+  metricHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  metricLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  iconCircle: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  metricBigValue: {
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+  },
+  metricUnit: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  metricSub: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  actionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 13,
+    borderRadius: 14,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  actionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  forecastBanner: {
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 10,
+  },
+  forecastHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  forecastTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  tagBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  tagBadgeText: {
+    color: '#10B981',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  forecastRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    marginTop: 4,
+  },
+  forecastLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  forecastAmount: {
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  forecastSubAmount: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  sectionContainer: {
+    gap: 10,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 2,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  sectionLink: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  alertCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  alertTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  alertDesc: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  alertCost: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  historyCard: {
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  historyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  fuelIconBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  historyTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  historySubtitle: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  historyAmount: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  historyKmPerLiter: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 20,
+    gap: 14,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  modalDesc: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  modalBtnRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 4,
+  },
+  modalBtnCancel: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  modalBtnConfirm: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+  },
+});
