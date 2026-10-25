@@ -9,14 +9,14 @@ import {
   TextInput,
   Alert,
   useColorScheme,
-  SafeAreaView,
   ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { StorageService } from '@/services/storage';
 import { Calculations } from '@/services/calculations';
-import { Vehicle, MaintenanceItem, MaintenanceCategory, MaintenanceAlert } from '@/types/vehicle';
+import { Vehicle, MaintenanceItem, MaintenanceCategory } from '@/types/vehicle';
 
 export default function MaintenancesScreen() {
   const colorScheme = useColorScheme();
@@ -126,7 +126,7 @@ export default function MaintenancesScreen() {
     red: '#EF4444',
   };
 
-  const categories: Array<{ id: MaintenanceCategory; label: string }> = [
+  const categories: { id: MaintenanceCategory; label: string }[] = [
     { id: 'oleo_filtro', label: 'Óleo e Filtros' },
     { id: 'freios', label: 'Freios' },
     { id: 'pneus', label: 'Pneus e Rodas' },

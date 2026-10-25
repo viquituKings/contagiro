@@ -44,12 +44,12 @@ export const Calculations = {
   // Alertas de Manutenções Preventivas
   getMaintenanceAlerts(currentKm: number, maintenances: MaintenanceItem[]): MaintenanceAlert[] {
     // Regras padrão de recomendação da indústria automotiva
-    const standardCategories: Array<{
+    const standardCategories: {
       category: MaintenanceItem['category'];
       title: string;
       intervalKm: number;
       estimatedCost: number;
-    }> = [
+    }[] = [
       { category: 'oleo_filtro', title: 'Troca de Óleo e Filtro', intervalKm: 10000, estimatedCost: 350 },
       { category: 'suspensao', title: 'Alinhamento & Balanceamento', intervalKm: 10000, estimatedCost: 150 },
       { category: 'freios', title: 'Pastilhas de Freio', intervalKm: 25000, estimatedCost: 280 },

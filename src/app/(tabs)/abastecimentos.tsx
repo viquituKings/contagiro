@@ -9,9 +9,9 @@ import {
   TextInput,
   Alert,
   useColorScheme,
-  SafeAreaView,
   Switch,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { StorageService } from '@/services/storage';
@@ -192,7 +192,7 @@ export default function RefuelingsScreen() {
               <Ionicons name="water-outline" size={54} color={theme.textMuted} />
               <Text style={[styles.emptyTitle, { color: theme.text }]}>Nenhum abastecimento</Text>
               <Text style={[styles.emptySubtitle, { color: theme.textMuted }]}>
-                Toque no botão "+ Abastecer" acima para adicionar o primeiro registro.
+                Toque no botão &quot;+ Abastecer&quot; acima para adicionar o primeiro registro.
               </Text>
             </View>
           }

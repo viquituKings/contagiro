@@ -9,16 +9,18 @@ import {
   TextInput,
   Alert,
   useColorScheme,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { StorageService } from '@/services/storage';
+import { useAuth } from '@/context/auth-context';
 import { Vehicle, FuelType } from '@/types/vehicle';
 
 export default function GarageScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const { user, logout } = useAuth();
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -31,7 +33,7 @@ export default function GarageScreen() {
   const [year, setYear] = useState('');
   const [tankCapacity, setTankCapacity] = useState('45');
   const [currentOdometer, setCurrentOdometer] = useState('');
-  const [fuelType, setFuelType] = useState<FuelType>('gasolina');
+  const [fuelType] = useState<FuelType>('gasolina');
 
   const loadData = async () => {
     const list = await StorageService.getVehicles();
@@ -148,6 +150,41 @@ export default function GarageScreen() {
           >
             <Ionicons name="add" size={20} color="#FFFFFF" />
             <Text style={styles.addBtnText}>+ Veículo</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* PERFIL / CONTA DO USUÁRIO */}
+        <View style={[styles.userCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+          <View style={styles.userInfo}>
+            <View style={[styles.userAvatar, { backgroundColor: theme.accentLight }]}>
+              <Ionicons name="person" size={20} color={theme.accent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.userName, { color: theme.text }]}>
+                {user?.displayName || 'Motorista'}
+              </Text>
+              <Text style={[styles.userEmail, { color: theme.textMuted }]} numberOfLines={1}>
+                {user?.email || 'Conectado'}
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            style={[styles.logoutBtn, { borderColor: theme.red + '44' }]}
+            onPress={() => {
+              Alert.alert('Sair da Conta', 'Deseja encerrar a sessão atual?', [
+                { text: 'Cancelar', style: 'cancel' },
+                {
+                  text: 'Sair',
+                  style: 'destructive',
+                  onPress: async () => {
+                    await logout();
+                  },
+                },
+              ]);
+            }}
+          >
+            <Ionicons name="log-out-outline" size={16} color={theme.red} />
+            <Text style={[styles.logoutText, { color: theme.red }]}>Sair</Text>
           </TouchableOpacity>
         </View>
 
@@ -510,5 +547,48 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '800',
+  },
+  userCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  userInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    marginRight: 12,
+  },
+  userAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  userName: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  userEmail: {
+    fontSize: 12,
+  },
+  logoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  logoutText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

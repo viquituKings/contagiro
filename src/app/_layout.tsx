@@ -1,115 +1,65 @@
-import { Tabs } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { useColorScheme, Platform } from 'react-native';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { useColorScheme, View, ActivityIndicator } from 'react-native';
+import { AuthProvider, useAuth } from '@/context/auth-context';
 import { StorageService } from '@/services/storage';
 
-export default function AppLayout() {
+function RootNavigation() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const { user, loading } = useAuth();
+  const segments = useSegments();
+  const router = useRouter();
 
   useEffect(() => {
     StorageService.init();
   }, []);
 
-  const getColor = (c: unknown): string => {
-    return typeof c === 'string' ? c : '#10B981';
-  };
+  useEffect(() => {
+    if (loading) return;
+
+    const currentSegment = segments[0] as string | undefined;
+    const isAuthRoute = currentSegment === 'login' || currentSegment === 'cadastro';
+
+    if (!user && !isAuthRoute) {
+      router.replace('/login');
+    } else if (user && isAuthRoute) {
+      router.replace('/(tabs)/index');
+    }
+  }, [user, loading, segments, router]);
+
+  if (loading) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: isDark ? '#090D16' : '#F8FAFC',
+        }}
+      >
+        <ActivityIndicator size="large" color="#10B981" />
+      </View>
+    );
+  }
 
   return (
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarActiveTintColor: '#10B981', // Emerald green
-          tabBarInactiveTintColor: isDark ? '#94A3B8' : '#64748B',
-          tabBarStyle: {
-            backgroundColor: isDark ? '#0F172A' : '#FFFFFF',
-            borderTopColor: isDark ? '#1E293B' : '#E2E8F0',
-            height: Platform.OS === 'ios' ? 88 : 68,
-            paddingBottom: Platform.OS === 'ios' ? 28 : 10,
-            paddingTop: 8,
-            elevation: 10,
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: -2 },
-            shadowOpacity: 0.08,
-            shadowRadius: 6,
-          },
-          tabBarLabelStyle: {
-            fontSize: 11,
-            fontWeight: '700',
-            marginTop: 2,
-          },
-        }}
-      >
-        <Tabs.Screen
-          name="index"
-          options={{
-            title: 'Painel',
-            tabBarIcon: ({ color, focused }) => (
-              <Ionicons
-                name={focused ? 'speedometer' : 'speedometer-outline'}
-                size={22}
-                color={getColor(color)}
-              />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="abastecimentos"
-          options={{
-            title: 'Abastecer',
-            tabBarIcon: ({ color, focused }) => (
-              <Ionicons
-                name={focused ? 'water' : 'water-outline'}
-                size={22}
-                color={getColor(color)}
-              />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="manutencoes"
-          options={{
-            title: 'Oficina',
-            tabBarIcon: ({ color, focused }) => (
-              <Ionicons
-                name={focused ? 'build' : 'build-outline'}
-                size={22}
-                color={getColor(color)}
-              />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="previsao"
-          options={{
-            title: 'Previsão',
-            tabBarIcon: ({ color, focused }) => (
-              <Ionicons
-                name={focused ? 'trending-up' : 'trending-up-outline'}
-                size={22}
-                color={getColor(color)}
-              />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="garagem"
-          options={{
-            title: 'Garagem',
-            tabBarIcon: ({ color, focused }) => (
-              <Ionicons
-                name={focused ? 'car-sport' : 'car-sport-outline'}
-                size={22}
-                color={getColor(color)}
-              />
-            ),
-          }}
-        />
-      </Tabs>
+      <Stack screenOptions={{ headerShown: false, animation: 'fade' }}>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="cadastro" options={{ headerShown: false }} />
+      </Stack>
     </>
+  );
+}
+
+export default function AppLayout() {
+  return (
+    <AuthProvider>
+      <RootNavigation />
+    </AuthProvider>
   );
 }
