@@ -42,38 +42,90 @@ export const Calculations = {
   },
 
   // Alertas de Manutenções Preventivas
-  getMaintenanceAlerts(currentKm: number, maintenances: MaintenanceItem[]): MaintenanceAlert[] {
-    // Regras padrão de recomendação da indústria automotiva
+  getMaintenanceAlerts(
+    currentKm: number,
+    maintenances: MaintenanceItem[],
+    vehicle?: Vehicle | null
+  ): MaintenanceAlert[] {
+    const isMoto = vehicle?.vehicleType === 'moto';
+
+    // Regras de recomendação automotiva com periodicidade configurada
     const standardCategories: {
       category: MaintenanceItem['category'];
       title: string;
       intervalKm: number;
       estimatedCost: number;
-    }[] = [
-      { category: 'oleo_filtro', title: 'Troca de Óleo e Filtro', intervalKm: 10000, estimatedCost: 350 },
-      { category: 'suspensao', title: 'Alinhamento & Balanceamento', intervalKm: 10000, estimatedCost: 150 },
-      { category: 'freios', title: 'Pastilhas de Freio', intervalKm: 25000, estimatedCost: 280 },
-      { category: 'ar_condicionado', title: 'Higienização e Filtro de Ar', intervalKm: 15000, estimatedCost: 120 },
-      { category: 'revisao_geral', title: 'Revisão Periódica Completa', intervalKm: 30000, estimatedCost: 650 },
-      { category: 'pneus', title: 'Rodízio de Pneus', intervalKm: 10000, estimatedCost: 80 },
-    ];
+      overrideDueKm?: number;
+    }[] = [];
+
+    // 1. Óleo e Filtro (respeita configuração periódica do veículo se houver)
+    const oilInterval = vehicle?.trocaOleoKm || (isMoto ? 3000 : 10000);
+    standardCategories.push({
+      category: 'oleo_filtro',
+      title: 'Troca de Óleo e Filtro',
+      intervalKm: oilInterval,
+      estimatedCost: isMoto ? 80 : 350,
+      overrideDueKm: vehicle?.proxTrocaOleoKm,
+    });
+
+    // 2. Revisão Geral (respeita configuração periódica do veículo se houver)
+    const revInterval = vehicle?.revisaoKm || (isMoto ? 6000 : 10000);
+    standardCategories.push({
+      category: 'revisao_geral',
+      title: 'Revisão Periódica Completa',
+      intervalKm: revInterval,
+      estimatedCost: isMoto ? 250 : 650,
+      overrideDueKm: vehicle?.proxRevKm,
+    });
+
+    if (isMoto) {
+      // Categorias periódicas exclusivas de Motocicletas (com base na configuração do veículo)
+      const lubInterval = vehicle?.lubrificarCorrenteKm || 500;
+      standardCategories.push({
+        category: 'lubrificar_corrente',
+        title: 'Lubrificar Corrente',
+        intervalKm: lubInterval,
+        estimatedCost: 20,
+        overrideDueKm: vehicle?.proxLubCorrenteKm,
+      });
+
+      const esticarInterval = vehicle?.esticarCorrenteKm || 1500;
+      standardCategories.push({
+        category: 'esticar_corrente',
+        title: 'Tensionar Corrente',
+        intervalKm: esticarInterval,
+        estimatedCost: 30,
+        overrideDueKm: vehicle?.proxEsticarCorrenteKm,
+      });
+    } else {
+      // Categorias periódicas de Automóveis
+      standardCategories.push(
+        { category: 'alinhamento_balanceamento', title: 'Alinhamento & Balanceamento', intervalKm: 10000, estimatedCost: 150 },
+        { category: 'rodizio_pneus', title: 'Rodízio de Pneus', intervalKm: 10000, estimatedCost: 80 },
+        { category: 'ar_condicionado', title: 'Higienização e Filtro de Ar', intervalKm: 15000, estimatedCost: 120 }
+      );
+    }
 
     const alerts: MaintenanceAlert[] = [];
 
     standardCategories.forEach((std) => {
-      // Procurar a última manutenção concluída desta categoria
-      const last = maintenances
-        .filter((m) => m.category === std.category && m.isCompleted)
-        .sort((a, b) => b.odometer - a.odometer)[0];
-
       let dueKm = 0;
-      if (last?.nextDueOdometer) {
-        dueKm = last.nextDueOdometer;
-      } else if (last) {
-        dueKm = last.odometer + std.intervalKm;
+
+      if (std.overrideDueKm && std.overrideDueKm > 0) {
+        dueKm = std.overrideDueKm;
       } else {
-        // Se nunca foi registrada, arredonda para o próximo intervalo de km
-        dueKm = Math.ceil(currentKm / std.intervalKm) * std.intervalKm;
+        // Procurar a última manutenção concluída desta categoria
+        const last = maintenances
+          .filter((m) => (m.category === std.category || (std.category === 'troca_pneus' && m.category === 'pneus')) && m.isCompleted)
+          .sort((a, b) => b.odometer - a.odometer)[0];
+
+        if (last?.nextDueOdometer) {
+          dueKm = last.nextDueOdometer;
+        } else if (last) {
+          dueKm = last.odometer + std.intervalKm;
+        } else {
+          dueKm = Math.ceil(currentKm / std.intervalKm) * std.intervalKm;
+        }
       }
 
       const kmRemaining = dueKm - currentKm;
@@ -92,13 +144,45 @@ export const Calculations = {
         currentKm,
         dueKm,
         kmRemaining,
-        estimatedCost: last?.cost || std.estimatedCost,
+        estimatedCost: std.estimatedCost,
       });
     });
 
     // Ordenar: primeiro vencidos, depois próximos, depois ok
     const order = { vencido: 0, proximo: 1, ok: 2 };
     return alerts.sort((a, b) => order[a.status] - order[b.status] || (a.kmRemaining ?? 0) - (b.kmRemaining ?? 0));
+  },
+
+  // Monitoramento de Itens por Desgaste (sem período rígido, exibindo última substituição)
+  getWearItemsStatus(currentKm: number, maintenances: MaintenanceItem[]) {
+    // 1. Pastilhas / Lonas de freio
+    const lastBrake = maintenances
+      .filter((m) => m.category === 'freios' && m.isCompleted)
+      .sort((a, b) => b.odometer - a.odometer)[0];
+
+    // 2. Troca de Pneus
+    const lastTire = maintenances
+      .filter((m) => (m.category === 'troca_pneus' || m.category === 'pneus') && m.isCompleted)
+      .sort((a, b) => b.odometer - a.odometer)[0];
+
+    return {
+      brake: lastBrake
+        ? {
+            odometer: lastBrake.odometer,
+            date: lastBrake.date,
+            side: lastBrake.sideLabel || lastBrake.side || 'Geral',
+            kmAgo: Math.max(0, currentKm - lastBrake.odometer),
+          }
+        : null,
+      tire: lastTire
+        ? {
+            odometer: lastTire.odometer,
+            date: lastTire.date,
+            side: lastTire.sideLabel || lastTire.side || 'Geral',
+            kmAgo: Math.max(0, currentKm - lastTire.odometer),
+          }
+        : null,
+    };
   },
 
   // Motor de Previsão de Gastos Inteligente

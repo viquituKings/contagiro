@@ -1,16 +1,50 @@
 export type FuelType = 'gasolina' | 'etanol' | 'diesel' | 'gnv';
 
+export type VehicleType = 'carro' | 'moto';
+
 export interface Vehicle {
   id: string;
-  name: string; // Ex: "Onix Turbo"
+  name: string; // Ex: "Onix Turbo" ou "Gol"
   model: string; // Ex: "Chevrolet Onix 1.0 Turbo"
-  plate: string; // Ex: "BRA2E19"
+  brand?: string; // Ex: "Chevrolet", "Volkswagen"
+  plate: string; // Ex: "BRA2E19" ou "JFJ-1254"
   year: number; // Ex: 2023
   tankCapacity: number; // Em litros (ex: 44)
   currentOdometer: number; // Em km (ex: 32450)
   fuelType: FuelType;
+  acceptedFuelTypes?: FuelType[]; // Tipos de combustível aceitos (ex: ['gasolina', 'etanol'])
   photoUrl?: string;
   flexEfficiencyRatio?: number; // Padrão 0.70 (70%)
+  
+  // Campos integrados com o Firestore / app anterior
+  vehicleType?: VehicleType;
+  engineDisplacement?: number; // Cilindrada em cc
+  cadManPeriodica?: boolean;
+  revisaoKm?: number;
+  revisaoMes?: number;
+  trocaOleoKm?: number;
+  trocaOleoMeses?: number;
+  ultimaRevisaoKm?: number;
+  ultimaTrocaOleoKm?: number;
+  proxRevKm?: number;
+  proxTrocaOleoKm?: number;
+  gastoManutencao?: number;
+  manFreioDiant?: number;
+  manFreioTras?: number;
+
+  // Periodicidade exclusiva de motocicletas (corrente / relação)
+  lubrificarCorrenteKm?: number;
+  ultimaLubCorrenteKm?: number;
+  proxLubCorrenteKm?: number;
+  esticarCorrenteKm?: number;
+  ultimaEsticarCorrenteKm?: number;
+  proxEsticarCorrenteKm?: number;
+
+  // Totalizadores agregados de abastecimento (otimização de banco)
+  totalGastoAbast?: number;
+  totalLitrosAbast?: number;
+  mediaGeralKmPorLitro?: number;
+  qtdAbastecimentos?: number;
 }
 
 export interface Refueling {
@@ -25,6 +59,9 @@ export interface Refueling {
   isFullTank: boolean; // Se completou o tanque
   gasStation?: string; // Nome do posto
   notes?: string;
+  plate?: string; // Placa do veículo associado
+  isAdditivated?: boolean; // Se combustível aditivado
+  previousOdometer?: number; // km anterior
   // Campos calculados em relação ao abastecimento anterior
   distanceTraveled?: number; // km rodados desde o último tanque cheio
   consumptionKmPerLiter?: number; // km/L
@@ -33,14 +70,19 @@ export interface Refueling {
 
 export type MaintenanceCategory =
   | 'oleo_filtro'
-  | 'pneus'
-  | 'freios'
+  | 'revisao_geral'
+  | 'freios' // Pastilhas/Lonas de Freio
+  | 'pneus' // Troca de Pneus
+  | 'troca_pneus'
+  | 'alinhamento_balanceamento' // Apenas Carro
+  | 'rodizio_pneus' // Apenas Carro
+  | 'esticar_corrente' // Apenas Moto
+  | 'lubrificar_corrente' // Apenas Moto
   | 'suspensao'
   | 'ar_condicionado'
   | 'bateria'
-  | 'revisao_geral'
   | 'documentacao' // IPVA, Seguro, Licenciamento
-  | 'outros';
+  | 'outros'; // Sem periodicidade
 
 export interface MaintenanceItem {
   id: string;
@@ -55,6 +97,8 @@ export interface MaintenanceItem {
   nextDueOdometer?: number; // Próximo km previsto (ex: +10.000km)
   nextDueDate?: string; // Próxima data prevista
   isCompleted: boolean;
+  side?: string; // Código do lado (ex: 'DIANTEIRO_ESQUERDO', 'DIANTEIRO', etc.)
+  sideLabel?: string; // Descrição amigável do lado (ex: "Dianteiro Esquerdo")
 }
 
 export interface MaintenanceAlert {

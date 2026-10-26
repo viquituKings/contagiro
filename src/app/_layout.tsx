@@ -25,7 +25,7 @@ function RootNavigation() {
     if (!user && !isAuthRoute) {
       router.replace('/login');
     } else if (user && isAuthRoute) {
-      router.replace('/(tabs)/index');
+      router.replace('/(tabs)');
     }
   }, [user, loading, segments, router]);
 

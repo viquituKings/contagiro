@@ -51,7 +51,7 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await loginWithEmail(email, password);
-      router.replace('/(tabs)/index');
+      router.replace('/(tabs)');
     } catch (error: unknown) {
       const err = error as { code?: string; message?: string };
       const msg = err.code ? getFirebaseAuthErrorMessage(err.code) : (err.message || 'Erro ao realizar login.');
@@ -65,7 +65,7 @@ export default function LoginScreen() {
     setGoogleLoading(true);
     try {
       await loginWithGoogle();
-      router.replace('/(tabs)/index');
+      router.replace('/(tabs)');
     } catch (error: unknown) {
       const err = error as { code?: string; message?: string };
       const msg = err.code ? getFirebaseAuthErrorMessage(err.code) : (err.message || 'Erro ao autenticar com o Google.');

@@ -1,14 +1,20 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useColorScheme, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const insets = useSafeAreaInsets();
 
   const getColor = (c: unknown): string => {
     return typeof c === 'string' ? c : '#10B981';
   };
+
+  // Garante que o padding inferior respeite os botões/gestos de navegação do Android e a barra do iOS
+  const bottomPadding = insets.bottom > 0 ? insets.bottom + 6 : (Platform.OS === 'ios' ? 24 : 10);
+  const tabHeight = 54 + bottomPadding;
 
   return (
     <Tabs
@@ -19,8 +25,8 @@ export default function TabLayout() {
         tabBarStyle: {
           backgroundColor: isDark ? '#0F172A' : '#FFFFFF',
           borderTopColor: isDark ? '#1E293B' : '#E2E8F0',
-          height: Platform.OS === 'ios' ? 88 : 68,
-          paddingBottom: Platform.OS === 'ios' ? 28 : 10,
+          height: tabHeight,
+          paddingBottom: bottomPadding,
           paddingTop: 8,
           elevation: 10,
           shadowColor: '#000',
@@ -32,6 +38,9 @@ export default function TabLayout() {
           fontSize: 11,
           fontWeight: '700',
           marginTop: 2,
+        },
+        sceneStyle: {
+          backgroundColor: isDark ? '#090D16' : '#F8FAFC',
         },
       }}
     >

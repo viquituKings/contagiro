@@ -67,7 +67,7 @@ export default function RegisterScreen() {
       Alert.alert('Sucesso', 'Sua conta foi criada com sucesso!', [
         {
           text: 'Continuar',
-          onPress: () => router.replace('/(tabs)/index'),
+          onPress: () => router.replace('/(tabs)'),
         },
       ]);
     } catch (error: unknown) {
@@ -83,7 +83,7 @@ export default function RegisterScreen() {
     setGoogleLoading(true);
     try {
       await loginWithGoogle();
-      router.replace('/(tabs)/index');
+      router.replace('/(tabs)');
     } catch (error: unknown) {
       const err = error as { code?: string; message?: string };
       const msg = err.code ? getFirebaseAuthErrorMessage(err.code) : (err.message || 'Erro ao autenticar com o Google.');
