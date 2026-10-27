@@ -1,0 +1,42 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyCIE6sqKsApFKF8qpw0Y5GbhdQKRbxfo9I",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "mediacombustivel-e76d9.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "mediacombustivel-e76d9",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "mediacombustivel-e76d9.appspot.com",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "992373241917",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:992373241917:web:098d66ab423a586ff85254"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyCIE6sqKsApFKF8qpw0Y5GbhdQKRbxfo9I",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "mediacombustivel-e76d9.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "mediacombustivel-e76d9",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "mediacombustivel-e76d9.appspot.com",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "992373241917",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:992373241917:web:098d66ab423a586ff85254"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
