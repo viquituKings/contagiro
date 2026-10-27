@@ -47,6 +47,7 @@ export default function GarageScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Formulário de Cadastro / Edição
   const [vehicleType, setVehicleType] = useState<VehicleType>('carro');
@@ -135,6 +136,8 @@ export default function GarageScreen() {
   };
 
   const handleSave = async () => {
+    if (saving) return;
+
     if (!editingVehicle && !name.trim()) {
       Alert.alert('Campo Obrigatório', 'Informe o modelo ou apelido do veículo.');
       return;
@@ -148,65 +151,73 @@ export default function GarageScreen() {
       return;
     }
 
-    const odomNum = parseInt(currentOdometer, 10) || 0;
-    const yearNum = parseInt(year, 10) || new Date().getFullYear();
-    const tankNum = parseInt(tankCapacity, 10) || (vehicleType === 'moto' ? 14 : 50);
-    const dispNum = engineDisplacement.trim() ? parseInt(engineDisplacement, 10) : undefined;
+    setSaving(true);
+    try {
+      const odomNum = parseInt(currentOdometer, 10) || 0;
+      const yearNum = parseInt(year, 10) || new Date().getFullYear();
+      const tankNum = parseInt(tankCapacity, 10) || (vehicleType === 'moto' ? 14 : 50);
+      const dispNum = engineDisplacement.trim() ? parseInt(engineDisplacement, 10) : undefined;
 
-    if (editingVehicle) {
-      // Modo Edição: marca, modelo e placa não podem ser alterados!
-      // Preserva informações de manutenção periódica já existentes
-      const updatedVeh: Vehicle = {
-        ...editingVehicle,
-        name: editingVehicle.name,
-        model: editingVehicle.model,
-        brand: editingVehicle.brand,
-        plate: editingVehicle.plate,
-        year: yearNum,
-        tankCapacity: tankNum,
-        currentOdometer: odomNum,
-        fuelType: acceptedFuels[0] || 'gasolina',
-        acceptedFuelTypes: acceptedFuels,
-        vehicleType: editingVehicle.vehicleType || vehicleType,
-        engineDisplacement: dispNum,
-        cadManPeriodica: editingVehicle.cadManPeriodica,
-        revisaoKm: editingVehicle.revisaoKm,
-        trocaOleoKm: editingVehicle.trocaOleoKm,
-        proxRevKm: editingVehicle.proxRevKm,
-        proxTrocaOleoKm: editingVehicle.proxTrocaOleoKm,
-        gastoManutencao: editingVehicle.gastoManutencao,
-      };
+      if (editingVehicle) {
+        // Modo Edição: marca, modelo e placa não podem ser alterados!
+        // Preserva informações de manutenção periódica já existentes
+        const updatedVeh: Vehicle = {
+          ...editingVehicle,
+          name: editingVehicle.name,
+          model: editingVehicle.model,
+          brand: editingVehicle.brand,
+          plate: editingVehicle.plate,
+          year: yearNum,
+          tankCapacity: tankNum,
+          currentOdometer: odomNum,
+          fuelType: acceptedFuels[0] || 'gasolina',
+          acceptedFuelTypes: acceptedFuels,
+          vehicleType: editingVehicle.vehicleType || vehicleType,
+          engineDisplacement: dispNum,
+          cadManPeriodica: editingVehicle.cadManPeriodica,
+          revisaoKm: editingVehicle.revisaoKm,
+          trocaOleoKm: editingVehicle.trocaOleoKm,
+          proxRevKm: editingVehicle.proxRevKm,
+          proxTrocaOleoKm: editingVehicle.proxTrocaOleoKm,
+          gastoManutencao: editingVehicle.gastoManutencao,
+        };
 
-      await StorageService.saveVehicle(updatedVeh);
-      Alert.alert('Sucesso', 'Informações do veículo atualizadas com sucesso!');
-    } else {
-      // Modo Criação:
-      // O ciclo de manutenção periódica será cadastrado futuramente na tela Oficina
-      const formattedPlate = formatPlate(plate);
-      const newVeh: Vehicle = {
-        id: 'veh-' + Date.now(),
-        name: name.trim(),
-        model: model.trim() || (brand ? `${brand} ${name}`.trim() : name.trim()),
-        brand: brand.trim(),
-        plate: formattedPlate,
-        year: yearNum,
-        tankCapacity: tankNum,
-        currentOdometer: odomNum,
-        fuelType: acceptedFuels[0] || 'gasolina',
-        acceptedFuelTypes: acceptedFuels,
-        vehicleType,
-        engineDisplacement: dispNum,
-        flexEfficiencyRatio: 0.70,
-        cadManPeriodica: false,
-        gastoManutencao: 0,
-      };
+        await StorageService.saveVehicle(updatedVeh);
+        Alert.alert('Sucesso', 'Informações do veículo atualizadas com sucesso!');
+      } else {
+        // Modo Criação:
+        // O ciclo de manutenção periódica será cadastrado futuramente na tela Oficina
+        const formattedPlate = formatPlate(plate);
+        const newVeh: Vehicle = {
+          id: 'veh-' + Date.now(),
+          name: name.trim(),
+          model: model.trim() || (brand ? `${brand} ${name}`.trim() : name.trim()),
+          brand: brand.trim(),
+          plate: formattedPlate,
+          year: yearNum,
+          tankCapacity: tankNum,
+          currentOdometer: odomNum,
+          fuelType: acceptedFuels[0] || 'gasolina',
+          acceptedFuelTypes: acceptedFuels,
+          vehicleType,
+          engineDisplacement: dispNum,
+          flexEfficiencyRatio: 0.70,
+          cadManPeriodica: false,
+          gastoManutencao: 0,
+        };
 
-      await StorageService.saveVehicle(newVeh);
-      await StorageService.setActiveVehicleId(newVeh.id);
+        await StorageService.saveVehicle(newVeh);
+        await StorageService.setActiveVehicleId(newVeh.id);
+      }
+
+      setModalVisible(false);
+      await loadData();
+    } catch (err) {
+      console.error('Erro ao salvar veículo:', err);
+      Alert.alert('Erro', 'Ocorreu um erro ao salvar o veículo. Tente novamente.');
+    } finally {
+      setSaving(false);
     }
-
-    setModalVisible(false);
-    await loadData();
   };
 
   const handleDelete = (id: string) => {
@@ -470,7 +481,11 @@ export default function GarageScreen() {
                 <Text style={[styles.modalTitle, { color: theme.text }]}>
                   {editingVehicle ? 'Editar Veículo' : 'Adicionar Veículo'}
                 </Text>
-                <TouchableOpacity onPress={() => setModalVisible(false)}>
+                <TouchableOpacity
+                  onPress={() => !saving && setModalVisible(false)}
+                  disabled={saving}
+                  style={{ opacity: saving ? 0.5 : 1 }}
+                >
                   <Ionicons name="close-circle" size={24} color={theme.textMuted} />
                 </TouchableOpacity>
               </View>
@@ -725,12 +740,33 @@ export default function GarageScreen() {
 
 
                 <TouchableOpacity
-                  style={[styles.saveBtn, { backgroundColor: theme.accent }]}
+                  style={[
+                    styles.saveBtn,
+                    {
+                      backgroundColor: theme.accent,
+                      opacity: saving ? 0.7 : 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                    },
+                  ]}
                   onPress={handleSave}
+                  disabled={saving}
+                  activeOpacity={0.8}
                 >
-                  <Text style={styles.saveBtnText}>
-                    {editingVehicle ? 'Salvar Alterações' : 'Cadastrar Veículo'}
-                  </Text>
+                  {saving ? (
+                    <>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <Text style={styles.saveBtnText}>
+                        {editingVehicle ? 'Salvando Alterações...' : 'Cadastrando Veículo...'}
+                      </Text>
+                    </>
+                  ) : (
+                    <Text style={styles.saveBtnText}>
+                      {editingVehicle ? 'Salvar Alterações' : 'Cadastrar Veículo'}
+                    </Text>
+                  )}
                 </TouchableOpacity>
               </ScrollView>
             </View>

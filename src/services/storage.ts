@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   collection,
   getDocs,
+  getDoc,
   doc,
   setDoc,
   deleteDoc,
@@ -9,7 +10,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db } from '@/services/firebase';
-import { Vehicle, Refueling, MaintenanceItem, MaintenanceCategory, FuelType, VehicleType } from '@/types/vehicle';
+import { Vehicle, Refueling, MaintenanceItem, MaintenanceCategory, FuelType, VehicleType, FuelPrices } from '@/types/vehicle';
 
 export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknown>): Vehicle {
   const brand = (data.marca as string) || '';
@@ -180,6 +181,7 @@ const STORAGE_KEYS = {
   REFUELINGS: '@contagiro:refuelings_v1',
   MAINTENANCES: '@contagiro:maintenances_v1',
   HAS_SEEDED: '@contagiro:has_seeded_v1',
+  FUEL_PRICES: '@contagiro:fuel_prices_v1',
 };
 
 // Dados de demonstração realistas para inicialização
@@ -729,6 +731,9 @@ export const StorageService = {
 
         // Atualiza os totalizadores agregados do veículo
         await this.recalculateVehicleStats(userEmail, refueling.vehicleId);
+
+        // Atualiza o documento de preços de combustível mais recentes praticados
+        await this.saveLatestFuelPrice(refueling.fuelType, refueling.pricePerLiter);
       } catch (err) {
         console.error('Erro ao salvar abastecimento hierárquico no Firestore:', err);
       }
@@ -1032,6 +1037,133 @@ export const StorageService = {
 
     await this.saveVehicle(vehicle);
     return vehicle;
+  },
+
+  // PREÇOS PRATICADOS DE COMBUSTÍVEIS (DOC INDEPENDENTE DO VEÍCULO)
+  async getLatestFuelPrices(): Promise<FuelPrices> {
+    const defaults: FuelPrices = {
+      gasolina: 5.89,
+      etanol: 3.89,
+      diesel: 6.09,
+      gnv: 4.79,
+    };
+
+    const userEmail = auth.currentUser?.email;
+    if (userEmail) {
+      try {
+        const docRef = doc(db, 'users', userEmail, 'configuracoes', 'precosCombustivel');
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          const prices: FuelPrices = {
+            gasolina: Number(data.gasolina) || defaults.gasolina,
+            etanol: Number(data.etanol) || defaults.etanol,
+            diesel: Number(data.diesel) || defaults.diesel,
+            gnv: Number(data.gnv) || defaults.gnv,
+            updatedAt: (data.atualizadoEm as string) || (data.updatedAt as string) || undefined,
+          };
+          await AsyncStorage.setItem(STORAGE_KEYS.FUEL_PRICES, JSON.stringify(prices));
+          return prices;
+        }
+      } catch (err) {
+        console.warn('Erro ao carregar precosCombustivel do Firestore:', err);
+      }
+    }
+
+    // Tentar cache local
+    try {
+      const cached = await AsyncStorage.getItem(STORAGE_KEYS.FUEL_PRICES);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch {
+      // Ignora erro de cache
+    }
+
+    // Se ainda não existir documento de configuração, derivar do último abastecimento registrado no sistema
+    try {
+      const allRefs = await this.getRefuelings();
+      if (allRefs.length > 0) {
+        const sorted = [...allRefs].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const lastGas = sorted.find((r) => r.fuelType === 'gasolina' && r.pricePerLiter > 0);
+        const lastEta = sorted.find((r) => r.fuelType === 'etanol' && r.pricePerLiter > 0);
+        const lastDie = sorted.find((r) => r.fuelType === 'diesel' && r.pricePerLiter > 0);
+        const lastGnv = sorted.find((r) => r.fuelType === 'gnv' && r.pricePerLiter > 0);
+
+        const prices: FuelPrices = {
+          gasolina: lastGas ? lastGas.pricePerLiter : defaults.gasolina,
+          etanol: lastEta ? lastEta.pricePerLiter : defaults.etanol,
+          diesel: lastDie ? lastDie.pricePerLiter : defaults.diesel,
+          gnv: lastGnv ? lastGnv.pricePerLiter : defaults.gnv,
+          updatedAt: new Date().toISOString(),
+        };
+
+        await this.saveFuelPrices(prices);
+        return prices;
+      }
+    } catch (err) {
+      console.warn('Erro ao derivar precosCombustivel do histórico:', err);
+    }
+
+    return defaults;
+  },
+
+  async saveFuelPrices(prices: Partial<FuelPrices>): Promise<void> {
+    const defaults: FuelPrices = {
+      gasolina: 5.89,
+      etanol: 3.89,
+      diesel: 6.09,
+      gnv: 4.79,
+    };
+    let current: FuelPrices = defaults;
+    try {
+      const cached = await AsyncStorage.getItem(STORAGE_KEYS.FUEL_PRICES);
+      if (cached) current = JSON.parse(cached);
+    } catch {
+      // Ignora erro de cache
+    }
+
+    const updated: FuelPrices = {
+      ...current,
+      ...prices,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const userEmail = auth.currentUser?.email;
+    if (userEmail) {
+      try {
+        const docRef = doc(db, 'users', userEmail, 'configuracoes', 'precosCombustivel');
+        await setDoc(
+          docRef,
+          {
+            gasolina: updated.gasolina,
+            etanol: updated.etanol,
+            diesel: updated.diesel,
+            gnv: updated.gnv,
+            atualizadoEm: updated.updatedAt,
+          },
+          { merge: true }
+        );
+      } catch (err) {
+        console.warn('Erro ao salvar precosCombustivel no Firestore:', err);
+      }
+    }
+
+    await AsyncStorage.setItem(STORAGE_KEYS.FUEL_PRICES, JSON.stringify(updated));
+  },
+
+  async saveLatestFuelPrice(fuelType: FuelType, price: number): Promise<void> {
+    if (!price || price <= 0) return;
+    const fuelFieldMap: Partial<Record<FuelType, keyof FuelPrices>> = {
+      gasolina: 'gasolina',
+      etanol: 'etanol',
+      diesel: 'diesel',
+      gnv: 'gnv',
+    };
+    const field = fuelFieldMap[fuelType];
+    if (field) {
+      await this.saveFuelPrices({ [field]: price });
+    }
   },
 
   // RESET

@@ -24,8 +24,11 @@ Firestore Root
 │       ├── medias/ (Coleção Legada de Abastecimentos — Migrada Automaticamente)
 │       │   └── {mediaId}
 │       │
-│       └── manutencoes/ (Subcoleção de Serviços e Oficina)
-│           └── {manutencaoId}
+│       ├── manutencoes/ (Subcoleção de Serviços e Oficina)
+│       │   └── {manutencaoId}
+│       │
+│       └── configuracoes/ (Subcoleção de Configurações e Preferências Globais)
+│           └── precosCombustivel (Documento com os Últimos Preços Praticados)
 │
 ├── marcas-carros/ (Catálogo Global de Fabricantes de Carros)
 │   └── {marcaId}/
@@ -166,20 +169,34 @@ Para garantir retrocompatibilidade com dados inseridos pelo app legado (onde os 
 
 | `tipoManutencaoVal` | `tipoManutencao` | Exige Lado? | Atualiza Ciclo do Veículo? |
 | :--- | :--- | :---: | :--- |
-| `TROLEO` | Troca de Óleo | Não | Sim (`ultimaTrocaOleoKm`, `proxTrocaOleoKm`) |
-| `REVISAO` | Revisão Geral | Não | Sim (`ultimaRevisaoKm`, `proxRevKm`, `proxTrocaOleoKm`) |
-| `PNEUS` | Pneus | Sim | Não (Apenas `gastoManutencao`) |
-| `MANFREIO` | Manutenção nos Freios | Sim | Não (Apenas `gastoManutencao`) |
-| `MANMOTOR` | Manutenção no motor | Não | Não (Apenas `gastoManutencao`) |
-| `LATARIA` | Lanternagem / Pintura | Não | Não (Apenas `gastoManutencao`) |
+| `TROLEO` | Troca de �---
+
+## ⚙️ 6. Documento de Configuração: `configuracoes/precosCombustivel`
+
+* **Caminho:** `users/{userEmail}/configuracoes/precosCombustivel`
+* **Finalidade:** Armazena os últimos preços de combustíveis praticados pelo usuário, **de forma global e desacoplada de veículos individuais**. 
+* **Comportamento:**
+  1. **Atualização Automática:** Sempre que o usuário cadastra um novo abastecimento com determinado combustível (Gasolina, Etanol, Diesel ou GNV), o preço praticado é automaticamente gravado neste documento.
+  2. **Atualização Manual:** Ajustes efetuados diretamente na calculadora flex da tela de Previsões são persistidos imediatamente neste documento.
+  3. **Compartilhamento Global:** A tela de Previsão Financeira, a calculadora Flex e o formulário de novos abastecimentos utilizam essa referência única como valor padrão, independente de qual veículo esteja selecionado na garagem.
+
+### 📋 Campos do Documento
+
+| Campo | Tipo | Obrigatório | Descrição / Exemplo |
+| :--- | :--- | :---: | :--- |
+| `gasolina` | `number` | Não | Último preço praticado por litro da gasolina em R$ (Ex: `5.89`) |
+| `etanol` | `number` | Não | Último preço praticado por litro do etanol em R$ (Ex: `3.99`) |
+| `diesel` | `number` | Não | Último preço praticado por litro do diesel em R$ (Ex: `6.15`) |
+| `gnv` | `number` | Não | Último preço praticado por m³ de GNV em R$ (Ex: `4.50`) |
+| `updatedAt` | `string` | Sim | Data e hora ISO da última atualização |
 
 ---
 
-## 🌐 6. Coleções Globais: Catálogo de Veículos
+## 🌐 7. Coleções Globais: Catálogo de Veículos
 
 Utilizadas para preenchimento de marcas e modelos no cadastro de novos veículos.
 
-### 6.1. Carros: `marcas-carros`
+### 7.1. Carros: `marcas-carros`
 * **Coleção:** `marcas-carros/{marcaId}`
   * `nomeMarca`: `string` (Ex: `"Chevrolet"`, `"Fiat"`, `"Volkswagen"`)
   * `valor`: `string` (Slug para busca de modelos, ex: `"chevrolet"`)
@@ -187,7 +204,7 @@ Utilizadas para preenchimento de marcas e modelos no cadastro de novos veículos
   * `nomeModelo`: `string` (Ex: `"Onix 1.0"`, `"Cruze Turbo"`)
   * `valor`: `string`
 
-### 6.2. Motos: `marcas-motos`
+### 7.2. Motos: `marcas-motos`
 * **Coleção:** `marcas-motos/{marcaId}`
   * `nomeMarca`: `string` (Ex: `"Honda"`, `"Yamaha"`)
   * `valor`: `string`
@@ -198,20 +215,21 @@ Utilizadas para preenchimento de marcas e modelos no cadastro de novos veículos
 
 ---
 
-## ⚡ 7. Regras de Negócio e Atualizações Cruzadas
+## ⚡ 8. Regras de Negócio e Atualizações Cruzadas
 
-### 7.1. Ao Cadastrar um Abastecimento:
+### 8.1. Ao Cadastrar um Abastecimento:
 1. Grava o documento em `users/${email}/veiculos/${veiculoId}/abastecimentos/${novoId}`.
 2. Atualiza atomicamente o veículo em `users/${email}/veiculos/${veiculoId}` com:
    * `kmAtual = novoKm`
    * `ultimoKm = novoKm`
    * `ultimoComb = combustivelAbastecido`
-3. Recalcula os totalizadores do veículo (`totalGastoAbast`, `totalLitrosAbast`, `mediaGeralKmPorLitro`, `qtdAbastecimentos`).
-4. **Verificação de Alertas Preventivos**:
+3. Atualiza os preços globais em `users/${email}/configuracoes/precosCombustivel` com o `valorLitro` do combustível abastecido.
+4. Recalcula os totalizadores do veículo (`totalGastoAbast`, `totalLitrosAbast`, `mediaGeralKmPorLitro`, `qtdAbastecimentos`).
+5. **Verificação de Alertas Preventivos**:
    * Se `(novoKm + 1000) >= veiculo.proxRevKm` ➔ Alerta de **Revisão Próxima**.
    * Se `(novoKm + 500) >= veiculo.proxTrocaOleoKm` ➔ Alerta de **Troca de Óleo Próxima**.
 
-### 7.2. Ao Cadastrar uma Manutenção (`manutencoes`):
+### 8.2. Ao Cadastrar uma Manutenção (`manutencoes`):
 1. Grava o documento em `users/${email}/manutencoes`.
 2. Atualiza o documento do veículo de acordo com o tipo:
    * **Se `TROLEO`:**
@@ -229,7 +247,7 @@ Utilizadas para preenchimento de marcas e modelos no cadastro de novos veículos
 
 ---
 
-## 🔄 8. De-Para: App Novo (React Native) ⟷ Firestore
+## 🔄 9. De-Para: App Novo (React Native) ⟷ Firestore
 
 | Propriedade no App (`src/types/vehicle.ts`) | Caminho / Campo no Firestore | Observações |
 | :--- | :--- | :--- |
@@ -250,6 +268,14 @@ Utilizadas para preenchimento de marcas e modelos no cadastro de novos veículos
 | `Refueling.consumptionKmPerLiter` | `doc.media` | Consumo médio (km/L) |
 | `Refueling.isFullTank` | `doc.seTanqueCheio` | Tanque cheio (boolean) |
 | `Refueling.isAdditivated` | `doc.seAditivado` | Combustível aditivado (boolean) |
+| `Refueling.notes` | `doc.observacao` | Observações opcionais |
+| `MaintenanceItem.id` | `manutencoes/{id}` | ID do documento em `manutencoes` |
+| `MaintenanceItem.vehicleId` | `doc.veiculoId` | Chave estrangeira do veículo |
+| `MaintenanceItem.cost` | `doc.valorManutencao` | Custo em R$ |
+| `MaintenanceItem.odometer` | `doc.kmManutencao` | Km do serviço |
+| `MaintenanceItem.category` | `doc.tipoManutencaoVal` | Código do serviço (`TROLEO`, `REVISAO`, etc.) |
+| `FuelPrices` | `configuracoes/precosCombustivel` | Preços globais vigentes (`gasolina`, `etanol`, `diesel`, `gnv`) |
+.seAditivado` | Combustível aditivado (boolean) |
 | `Refueling.notes` | `doc.observacao` | Observações opcionais |
 | `MaintenanceItem.id` | `manutencoes/{id}` | ID do documento em `manutencoes` |
 | `MaintenanceItem.vehicleId` | `doc.veiculoId` | Chave estrangeira do veículo |

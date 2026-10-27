@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -31,11 +31,15 @@ export default function MaintenancesScreen() {
   const [maintenances, setMaintenances] = useState<MaintenanceItem[]>([]);
   const [activeTab, setActiveTab] = useState<'alertas' | 'historico'>('alertas');
   const [loading, setLoading] = useState(true);
+  const [isSwitchingVehicle, setIsSwitchingVehicle] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const latestSwitchRequestId = useRef(0);
 
   // Modais
   const [modalMntVisible, setModalMntVisible] = useState(false);
   const [modalPeriodicVisible, setModalPeriodicVisible] = useState(false);
+  const [savingMnt, setSavingMnt] = useState(false);
+  const [savingPeriodic, setSavingPeriodic] = useState(false);
 
   // Formulário: Registrar Manutenção
   const [title, setTitle] = useState('');
@@ -117,11 +121,27 @@ export default function MaintenancesScreen() {
   );
 
   const handleSelectVehicle = async (v: Vehicle) => {
+    if (v.id === vehicle?.id && !isSwitchingVehicle) return;
+
+    const requestId = ++latestSwitchRequestId.current;
+    setIsSwitchingVehicle(true);
     setVehicle(v);
-    await StorageService.setActiveVehicleId(v.id);
-    const list = await StorageService.getMaintenances(v.id);
-    setMaintenances(list);
     setOdometer(String(v.currentOdometer));
+    setMaintenances([]);
+
+    try {
+      await StorageService.setActiveVehicleId(v.id);
+      const list = await StorageService.getMaintenances(v.id);
+      if (requestId === latestSwitchRequestId.current) {
+        setMaintenances(list);
+      }
+    } catch (e) {
+      console.warn('Erro ao trocar de veículo na oficina:', e);
+    } finally {
+      if (requestId === latestSwitchRequestId.current) {
+        setIsSwitchingVehicle(false);
+      }
+    }
   };
 
   const isMoto = vehicle?.vehicleType === 'moto';
@@ -195,6 +215,7 @@ export default function MaintenancesScreen() {
   };
 
   const handleOpenMaintenanceModal = (preselectedCategory?: MaintenanceCategory) => {
+    if (isSwitchingVehicle) return;
     if (!vehicle) {
       Alert.alert('Atenção', 'Cadastre ou selecione um veículo primeiro.');
       return;
@@ -210,7 +231,7 @@ export default function MaintenancesScreen() {
 
   // Abre modal de periodicidade (para cadastro inicial ou edição a qualquer momento)
   const handleOpenPeriodicModal = () => {
-    if (!vehicle) return;
+    if (isSwitchingVehicle || !vehicle) return;
 
     setPeriodicUltimaRevKm(String(vehicle.ultimaRevisaoKm ?? vehicle.currentOdometer ?? 0));
     setPeriodicRevKm(String(vehicle.revisaoKm ?? (isMoto ? 6000 : 10000)));
@@ -230,7 +251,7 @@ export default function MaintenancesScreen() {
   };
 
   const handleSavePeriodicConfig = async () => {
-    if (!vehicle) return;
+    if (!vehicle || savingPeriodic) return;
 
     const uRev = parseInt(periodicUltimaRevKm, 10);
     const rKm = parseInt(periodicRevKm, 10);
@@ -269,33 +290,41 @@ export default function MaintenancesScreen() {
       }
     }
 
-    const updated = await StorageService.savePeriodicMaintenanceConfig(vehicle.id, {
-      ultimaRevisaoKm: uRev,
-      revisaoKm: rKm,
-      revisaoMes: rMes,
-      ultimaTrocaOleoKm: uOleo,
-      trocaOleoKm: oKm,
-      trocaOleoMeses: oMes,
-      lubrificarCorrenteKm: lubKm,
-      ultimaLubCorrenteKm: uLubKm,
-      esticarCorrenteKm: esticarKm,
-      ultimaEsticarCorrenteKm: uEsticarKm,
-    });
+    setSavingPeriodic(true);
+    try {
+      const updated = await StorageService.savePeriodicMaintenanceConfig(vehicle.id, {
+        ultimaRevisaoKm: uRev,
+        revisaoKm: rKm,
+        revisaoMes: rMes,
+        ultimaTrocaOleoKm: uOleo,
+        trocaOleoKm: oKm,
+        trocaOleoMeses: oMes,
+        lubrificarCorrenteKm: lubKm,
+        ultimaLubCorrenteKm: uLubKm,
+        esticarCorrenteKm: esticarKm,
+        ultimaEsticarCorrenteKm: uEsticarKm,
+      });
 
-    if (updated) {
-      setVehicle(updated);
-      Alert.alert(
-        'Sucesso!',
-        'Periodicidade de manutenções salva com sucesso! Os alertas preventivos foram atualizados.'
-      );
+      if (updated) {
+        setVehicle(updated);
+        Alert.alert(
+          'Sucesso!',
+          'Periodicidade de manutenções salva com sucesso! Os alertas preventivos foram atualizados.'
+        );
+      }
+
+      setModalPeriodicVisible(false);
+      await loadData();
+    } catch (err) {
+      console.error('Erro ao salvar periodicidade:', err);
+      Alert.alert('Erro', 'Ocorreu um erro ao salvar a periodicidade. Tente novamente.');
+    } finally {
+      setSavingPeriodic(false);
     }
-
-    setModalPeriodicVisible(false);
-    await loadData();
   };
 
   const handleSaveMaintenance = async () => {
-    if (!vehicle) return;
+    if (!vehicle || savingMnt) return;
 
     const odomNum = parseInt(odometer, 10);
     const costNum = parseFloat(cost.replace(',', '.'));
@@ -327,24 +356,32 @@ export default function MaintenancesScreen() {
     const nextDueOdometer =
       !isNaN(nextInterval) && nextInterval > 0 ? odomNum + nextInterval : undefined;
 
-    const newMnt: MaintenanceItem = {
-      id: 'mnt-' + Date.now(),
-      vehicleId: vehicle.id,
-      date: getLocalDateString(selectedDate),
-      odometer: odomNum,
-      category,
-      title: title.trim(),
-      workshop: workshop.trim() || undefined,
-      cost: costNum,
-      nextDueOdometer,
-      isCompleted: true,
-      side: selectedSide || undefined,
-      sideLabel: sideLabel || undefined,
-    };
+    setSavingMnt(true);
+    try {
+      const newMnt: MaintenanceItem = {
+        id: 'mnt-' + Date.now(),
+        vehicleId: vehicle.id,
+        date: getLocalDateString(selectedDate),
+        odometer: odomNum,
+        category,
+        title: title.trim(),
+        workshop: workshop.trim() || undefined,
+        cost: costNum,
+        nextDueOdometer,
+        isCompleted: true,
+        side: selectedSide || undefined,
+        sideLabel: sideLabel || undefined,
+      };
 
-    await StorageService.addMaintenance(newMnt);
-    setModalMntVisible(false);
-    await loadData();
+      await StorageService.addMaintenance(newMnt);
+      setModalMntVisible(false);
+      await loadData();
+    } catch (err) {
+      console.error('Erro ao salvar manutenção:', err);
+      Alert.alert('Erro', 'Ocorreu um erro ao salvar a manutenção. Tente novamente.');
+    } finally {
+      setSavingMnt(false);
+    }
   };
 
   const handleDelete = (id: string) => {
@@ -396,19 +433,39 @@ export default function MaintenancesScreen() {
         <View style={styles.header}>
           <View>
             <Text style={[styles.title, { color: theme.text }]}>Oficina</Text>
-            <Text style={[styles.subtitle, { color: theme.textMuted }]}>
-              {vehicle ? `${vehicle.name} (${vehicle.plate})` : 'Nenhum veículo selecionado'}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+              <Text style={[styles.subtitle, { color: theme.textMuted }]}>
+                {vehicle ? `${vehicle.name} (${vehicle.plate})` : 'Nenhum veículo selecionado'}
+              </Text>
+              {(loading || isSwitchingVehicle) && (
+                <View
+                  style={[
+                    styles.loadingBadge,
+                    {
+                      backgroundColor: isDark
+                        ? 'rgba(59, 130, 246, 0.2)'
+                        : 'rgba(59, 130, 246, 0.12)',
+                    },
+                  ]}
+                >
+                  <Text style={[styles.loadingBadgeText, { color: theme.blue }]}>
+                    Carregando...
+                  </Text>
+                </View>
+              )}
+            </View>
           </View>
 
           <View style={styles.headerActions}>
             {/* BOTÃO PERIODICIDADE (Sempre ativo para cadastrar ou editar) */}
             <TouchableOpacity
+              disabled={isSwitchingVehicle}
               style={[
                 styles.periodBtnActive,
                 {
                   backgroundColor: vehicle?.cadManPeriodica ? theme.blueLight : theme.amberLight,
                   borderColor: vehicle?.cadManPeriodica ? theme.blue : theme.amber,
+                  opacity: isSwitchingVehicle ? 0.6 : 1,
                 },
               ]}
               onPress={handleOpenPeriodicModal}
@@ -430,7 +487,8 @@ export default function MaintenancesScreen() {
 
             {/* BOTÃO + MANUTENÇÃO */}
             <TouchableOpacity
-              style={[styles.addBtn, { backgroundColor: theme.blue }]}
+              disabled={isSwitchingVehicle}
+              style={[styles.addBtn, { backgroundColor: theme.blue, opacity: isSwitchingVehicle ? 0.6 : 1 }]}
               onPress={() => handleOpenMaintenanceModal()}
             >
               <Ionicons name="add" size={18} color="#FFFFFF" />
@@ -445,23 +503,30 @@ export default function MaintenancesScreen() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.vehicleChipsRow}>
               {vehicles.map((v) => {
                 const isSelected = v.id === vehicle?.id;
+                const isLoadingThis = isSelected && isSwitchingVehicle;
                 return (
                   <TouchableOpacity
                     key={v.id}
+                    disabled={isSwitchingVehicle}
                     style={[
                       styles.vehicleChip,
                       {
                         backgroundColor: isSelected ? theme.blue : theme.card,
                         borderColor: isSelected ? theme.blue : theme.cardBorder,
+                        opacity: isSwitchingVehicle && !isSelected ? 0.6 : 1,
                       },
                     ]}
                     onPress={() => handleSelectVehicle(v)}
                   >
-                    <Ionicons
-                      name={v.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
-                      size={15}
-                      color={isSelected ? '#FFFFFF' : theme.blue}
-                    />
+                    {isLoadingThis ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 2 }} />
+                    ) : (
+                      <Ionicons
+                        name={v.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
+                        size={15}
+                        color={isSelected ? '#FFFFFF' : theme.blue}
+                      />
+                    )}
                     <Text style={[styles.vehicleChipText, { color: isSelected ? '#FFFFFF' : theme.text }]}>
                       {v.name}
                     </Text>
@@ -476,63 +541,78 @@ export default function MaintenancesScreen() {
         )}
 
         {/* TOTAL INVESTIDO EM MANUTENÇÃO */}
-        <View style={[styles.summaryCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-          <View style={styles.summaryItem}>
-            <Text style={[styles.summaryLabel, { color: theme.textMuted }]}>Total em Serviços</Text>
-            <Text style={[styles.summaryValue, { color: theme.text }]}>
-              R$ {totalSpent.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </Text>
+        {!loading && !isSwitchingVehicle && (
+          <View style={[styles.summaryCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <View style={styles.summaryItem}>
+              <Text style={[styles.summaryLabel, { color: theme.textMuted }]}>Total em Serviços</Text>
+              <Text style={[styles.summaryValue, { color: theme.text }]}>
+                R$ {totalSpent.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </Text>
+            </View>
+            <View style={[styles.summaryDivider, { backgroundColor: theme.cardBorder }]} />
+            <View style={styles.summaryItem}>
+              <Text style={[styles.summaryLabel, { color: theme.textMuted }]}>Odômetro Atual</Text>
+              <Text style={[styles.summaryValue, { color: theme.blue }]}>
+                {vehicle?.currentOdometer.toLocaleString('pt-BR')} km
+              </Text>
+            </View>
           </View>
-          <View style={[styles.summaryDivider, { backgroundColor: theme.cardBorder }]} />
-          <View style={styles.summaryItem}>
-            <Text style={[styles.summaryLabel, { color: theme.textMuted }]}>Odômetro Atual</Text>
-            <Text style={[styles.summaryValue, { color: theme.blue }]}>
-              {vehicle?.currentOdometer.toLocaleString('pt-BR')} km
-            </Text>
-          </View>
-        </View>
+        )}
 
         {/* SELETOR DE ABAS: ALERTAS VS HISTÓRICO */}
-        <View style={[styles.tabSelector, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-          <TouchableOpacity
-            style={[
-              styles.tabBtn,
-              activeTab === 'alertas' && { backgroundColor: theme.blue },
-            ]}
-            onPress={() => setActiveTab('alertas')}
-          >
-            <Text
+        {!loading && !isSwitchingVehicle && (
+          <View style={[styles.tabSelector, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <TouchableOpacity
               style={[
-                styles.tabBtnText,
-                { color: activeTab === 'alertas' ? '#FFFFFF' : theme.textMuted },
+                styles.tabBtn,
+                activeTab === 'alertas' && { backgroundColor: theme.blue },
               ]}
+              onPress={() => setActiveTab('alertas')}
             >
-              Alertas Preventivos ({alerts.filter((a) => a.status !== 'ok').length})
-            </Text>
-          </TouchableOpacity>
+              <Text
+                style={[
+                  styles.tabBtnText,
+                  { color: activeTab === 'alertas' ? '#FFFFFF' : theme.textMuted },
+                ]}
+              >
+                Alertas Preventivos ({alerts.filter((a) => a.status !== 'ok').length})
+              </Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[
-              styles.tabBtn,
-              activeTab === 'historico' && { backgroundColor: theme.blue },
-            ]}
-            onPress={() => setActiveTab('historico')}
-          >
-            <Text
+            <TouchableOpacity
               style={[
-                styles.tabBtnText,
-                { color: activeTab === 'historico' ? '#FFFFFF' : theme.textMuted },
+                styles.tabBtn,
+                activeTab === 'historico' && { backgroundColor: theme.blue },
               ]}
+              onPress={() => setActiveTab('historico')}
             >
-              Histórico ({maintenances.length})
-            </Text>
-          </TouchableOpacity>
-        </View>
+              <Text
+                style={[
+                  styles.tabBtnText,
+                  { color: activeTab === 'historico' ? '#FFFFFF' : theme.textMuted },
+                ]}
+              >
+                Histórico ({maintenances.length})
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
-        {loading && maintenances.length === 0 ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={theme.blue} />
-            <Text style={[styles.loadingText, { color: theme.textMuted }]}>Carregando dados da oficina...</Text>
+        {loading || isSwitchingVehicle ? (
+          <View style={[styles.loadingContainer, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <View style={[styles.loadingIconCircle, { backgroundColor: isDark ? 'rgba(59, 130, 246, 0.15)' : 'rgba(59, 130, 246, 0.1)' }]}>
+              <ActivityIndicator size="large" color={theme.blue} />
+            </View>
+            <Text style={[styles.loadingTitle, { color: theme.text }]}>
+              {isSwitchingVehicle
+                ? `Carregando dados de ${vehicle?.name || 'veículo'}...`
+                : 'Carregando dados da oficina...'}
+            </Text>
+            <Text style={[styles.loadingSubtitle, { color: theme.textMuted }]}>
+              {isSwitchingVehicle
+                ? 'Atualizando serviços, manutenções e alertas preventivos.'
+                : 'Sincronizando histórico e revisões com o banco de dados...'}
+            </Text>
           </View>
         ) : activeTab === 'alertas' ? (
           /* CONTEÚDO: ALERTAS PREVENTIVOS & ITENS POR DESGASTE */
@@ -668,9 +748,12 @@ export default function MaintenancesScreen() {
 
               {alerts.map((item, idx) => {
                 const isVencido = item.status === 'vencido';
-                const isProximo = item.status === 'proximo';
-                const badgeColor = isVencido ? theme.red : isProximo ? theme.amber : theme.accent;
-                const badgeText = isVencido ? 'VENCIDO' : isProximo ? 'ATENÇÃO' : 'EM DIA';
+                const isAlerta = item.status === 'alerta';
+                const isAtencao = item.status === 'atencao' || item.status === 'proximo';
+                const isRed = isVencido || isAlerta;
+
+                const badgeColor = isRed ? theme.red : isAtencao ? theme.amber : theme.accent;
+                const badgeText = isVencido ? 'VENCIDO' : isAlerta ? 'ALERTA' : isAtencao ? 'ATENÇÃO' : 'EM DIA';
 
                 return (
                   <View
@@ -679,7 +762,7 @@ export default function MaintenancesScreen() {
                       styles.alertCard,
                       {
                         backgroundColor: theme.card,
-                        borderColor: isVencido ? theme.red : isProximo ? theme.amber : theme.cardBorder,
+                        borderColor: isRed ? theme.red : isAtencao ? theme.amber : theme.cardBorder,
                       },
                     ]}
                   >
@@ -700,6 +783,10 @@ export default function MaintenancesScreen() {
                         {item.kmRemaining != null
                           ? item.kmRemaining <= 0
                             ? `Atrasado há ${Math.abs(item.kmRemaining).toLocaleString('pt-BR')} km`
+                            : isAlerta
+                            ? `Alerta: faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
+                            : isAtencao
+                            ? `Atenção: faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
                             : `Faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
                           : '--'}
                       </Text>
@@ -778,7 +865,11 @@ export default function MaintenancesScreen() {
                     {vehicle?.name} ({vehicle?.plate})
                   </Text>
                 </View>
-                <TouchableOpacity onPress={() => setModalMntVisible(false)}>
+                <TouchableOpacity
+                  onPress={() => !savingMnt && setModalMntVisible(false)}
+                  disabled={savingMnt}
+                  style={{ opacity: savingMnt ? 0.5 : 1 }}
+                >
                   <Ionicons name="close-circle" size={24} color={theme.textMuted} />
                 </TouchableOpacity>
               </View>
@@ -961,10 +1052,29 @@ export default function MaintenancesScreen() {
                 </View>
 
                 <TouchableOpacity
-                  style={[styles.saveBtn, { backgroundColor: theme.blue }]}
+                  style={[
+                    styles.saveBtn,
+                    {
+                      backgroundColor: theme.blue,
+                      opacity: savingMnt ? 0.7 : 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                    },
+                  ]}
                   onPress={handleSaveMaintenance}
+                  disabled={savingMnt}
+                  activeOpacity={0.8}
                 >
-                  <Text style={styles.saveBtnText}>Salvar Manutenção</Text>
+                  {savingMnt ? (
+                    <>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <Text style={styles.saveBtnText}>Salvando Manutenção...</Text>
+                    </>
+                  ) : (
+                    <Text style={styles.saveBtnText}>Salvar Manutenção</Text>
+                  )}
                 </TouchableOpacity>
               </ScrollView>
             </View>
@@ -984,7 +1094,11 @@ export default function MaintenancesScreen() {
                     {vehicle?.name} ({vehicle?.plate})
                   </Text>
                 </View>
-                <TouchableOpacity onPress={() => setModalPeriodicVisible(false)}>
+                <TouchableOpacity
+                  onPress={() => !savingPeriodic && setModalPeriodicVisible(false)}
+                  disabled={savingPeriodic}
+                  style={{ opacity: savingPeriodic ? 0.5 : 1 }}
+                >
                   <Ionicons name="close-circle" size={24} color={theme.textMuted} />
                 </TouchableOpacity>
               </View>
@@ -1151,12 +1265,32 @@ export default function MaintenancesScreen() {
                 )}
 
                 <TouchableOpacity
-                  style={[styles.saveBtn, { backgroundColor: theme.accent, marginTop: 4 }]}
+                  style={[
+                    styles.saveBtn,
+                    {
+                      backgroundColor: theme.accent,
+                      marginTop: 4,
+                      opacity: savingPeriodic ? 0.7 : 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                    },
+                  ]}
                   onPress={handleSavePeriodicConfig}
+                  disabled={savingPeriodic}
+                  activeOpacity={0.8}
                 >
-                  <Text style={styles.saveBtnText}>
-                    {vehicle?.cadManPeriodica ? 'Salvar Alterações' : 'Cadastrar Periodicidade'}
-                  </Text>
+                  {savingPeriodic ? (
+                    <>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <Text style={styles.saveBtnText}>Salvando Periodicidade...</Text>
+                    </>
+                  ) : (
+                    <Text style={styles.saveBtnText}>
+                      {vehicle?.cadManPeriodica ? 'Salvar Alterações' : 'Cadastrar Periodicidade'}
+                    </Text>
+                  )}
                 </TouchableOpacity>
               </ScrollView>
             </View>
@@ -1499,11 +1633,40 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
+    padding: 32,
+    borderRadius: 20,
+    borderWidth: 1,
+    gap: 8,
+    marginVertical: 12,
   },
-  loadingText: {
+  loadingIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  loadingTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  loadingSubtitle: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '500',
+    textAlign: 'center',
+    maxWidth: 290,
+    lineHeight: 18,
+  },
+  loadingBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  loadingBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
   },
   modalOverlay: {
     flex: 1,

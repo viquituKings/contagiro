@@ -104,7 +104,7 @@ export interface MaintenanceItem {
 export interface MaintenanceAlert {
   category: MaintenanceCategory;
   title: string;
-  status: 'ok' | 'proximo' | 'vencido';
+  status: 'ok' | 'atencao' | 'alerta' | 'vencido' | 'proximo';
   currentKm: number;
   dueKm?: number;
   kmRemaining?: number;
@@ -124,4 +124,13 @@ export interface FuelForecast {
   projected90DaysCost: number;
   upcomingMaintenancesCost30Days: number;
   totalProjectedCost30Days: number;
+  vehicleBreakdowns?: { vehicle: Vehicle; forecast: FuelForecast }[];
+}
+
+export interface FuelPrices {
+  gasolina: number;
+  etanol: number;
+  diesel: number;
+  gnv: number;
+  updatedAt?: string;
 }

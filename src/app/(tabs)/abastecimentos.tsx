@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -30,8 +30,11 @@ export default function RefuelingsScreen() {
   const [vehicle, setVehicle] = useState<Vehicle | null>(null);
   const [refuelings, setRefuelings] = useState<Refueling[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isSwitchingVehicle, setIsSwitchingVehicle] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const latestSwitchRequestId = useRef(0);
 
   // Formulário de Abastecimento
   const [odometer, setOdometer] = useState('');
@@ -95,14 +98,30 @@ export default function RefuelingsScreen() {
   );
 
   const handleSelectVehicle = async (veh: Vehicle) => {
-    await StorageService.setActiveVehicleId(veh.id);
+    if (veh.id === vehicle?.id && !isSwitchingVehicle) return;
+
+    const requestId = ++latestSwitchRequestId.current;
+    setIsSwitchingVehicle(true);
     setVehicle(veh);
     setOdometer(String(veh.currentOdometer));
     if (veh.acceptedFuelTypes && veh.acceptedFuelTypes.length > 0) {
       setFuelType(veh.acceptedFuelTypes[0]);
     }
-    const list = await StorageService.getRefuelings(veh.id);
-    setRefuelings(list);
+    setRefuelings([]);
+
+    try {
+      await StorageService.setActiveVehicleId(veh.id);
+      const list = await StorageService.getRefuelings(veh.id);
+      if (requestId === latestSwitchRequestId.current) {
+        setRefuelings(list);
+      }
+    } catch (err) {
+      console.error('Erro ao trocar de veículo:', err);
+    } finally {
+      if (requestId === latestSwitchRequestId.current) {
+        setIsSwitchingVehicle(false);
+      }
+    }
   };
 
   // Cálculo dinâmico entre Litros e Valor Total ao digitar
@@ -133,18 +152,48 @@ export default function RefuelingsScreen() {
     }
   };
 
-  const handleOpenModal = () => {
+  const handleSelectFuelType = async (f: FuelType) => {
+    setFuelType(f);
+    try {
+      const prices = await StorageService.getLatestFuelPrices();
+      if (prices && prices[f] > 0) {
+        setPricePerLiter(prices[f].toFixed(2).replace('.', ','));
+        if (totalAmount) {
+          const tot = parseFloat(totalAmount.replace(',', '.'));
+          if (tot > 0) {
+            setLiters((tot / prices[f]).toFixed(2).replace('.', ','));
+          }
+        }
+      }
+    } catch {
+      // Ignora erro
+    }
+  };
+
+  const handleOpenModal = async () => {
+    if (isSwitchingVehicle) return;
     if (!vehicle) {
       Alert.alert('Atenção', 'Cadastre ou selecione um veículo na Garagem antes de abastecer.');
       return;
     }
     setOdometer(String(vehicle.currentOdometer || ''));
-    if (vehicle.acceptedFuelTypes && vehicle.acceptedFuelTypes.length > 0) {
-      setFuelType(vehicle.acceptedFuelTypes[0]);
-    } else {
-      setFuelType('gasolina');
+    const initialFuel =
+      vehicle.acceptedFuelTypes && vehicle.acceptedFuelTypes.length > 0
+        ? vehicle.acceptedFuelTypes[0]
+        : 'gasolina';
+    setFuelType(initialFuel);
+
+    try {
+      const prices = await StorageService.getLatestFuelPrices();
+      if (prices && prices[initialFuel] > 0) {
+        setPricePerLiter(prices[initialFuel].toFixed(2).replace('.', ','));
+      } else {
+        setPricePerLiter('');
+      }
+    } catch {
+      setPricePerLiter('');
     }
-    setPricePerLiter('');
+
     setTotalAmount('');
     setLiters('');
     setIsFullTank(true);
@@ -170,36 +219,44 @@ export default function RefuelingsScreen() {
     totalNum: number,
     litersNum: number
   ) => {
-    if (!vehicle) return;
+    if (!vehicle || saving) return;
 
-    const calculatedLiters =
-      isNaN(litersNum) || litersNum <= 0
-        ? Number((totalNum / priceNum).toFixed(2))
-        : litersNum;
+    setSaving(true);
+    try {
+      const calculatedLiters =
+        isNaN(litersNum) || litersNum <= 0
+          ? Number((totalNum / priceNum).toFixed(2))
+          : litersNum;
 
-    const newRef: Refueling = {
-      id: 'ref-' + Date.now(),
-      vehicleId: vehicle.id,
-      plate: vehicle.plate,
-      date: getLocalDateString(selectedDate),
-      odometer: odomNum,
-      fuelType,
-      pricePerLiter: priceNum,
-      totalAmount: totalNum,
-      liters: calculatedLiters,
-      isFullTank,
-      isAdditivated,
-      notes: notes.trim() || undefined,
-      gasStation: notes.trim() || undefined,
-    };
+      const newRef: Refueling = {
+        id: 'ref-' + Date.now(),
+        vehicleId: vehicle.id,
+        plate: vehicle.plate,
+        date: getLocalDateString(selectedDate),
+        odometer: odomNum,
+        fuelType,
+        pricePerLiter: priceNum,
+        totalAmount: totalNum,
+        liters: calculatedLiters,
+        isFullTank,
+        isAdditivated,
+        notes: notes.trim() || undefined,
+        gasStation: notes.trim() || undefined,
+      };
 
-    await StorageService.addRefueling(newRef);
-    setModalVisible(false);
-    await loadData();
+      await StorageService.addRefueling(newRef);
+      setModalVisible(false);
+      await loadData();
+    } catch (err) {
+      console.error('Erro ao salvar abastecimento:', err);
+      Alert.alert('Erro', 'Ocorreu um erro ao salvar o abastecimento. Tente novamente.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSave = async () => {
-    if (!vehicle) return;
+    if (!vehicle || saving) return;
 
     const odomNum = parseInt(odometer, 10);
     const priceNum = parseFloat(pricePerLiter.replace(',', '.'));
@@ -300,12 +357,34 @@ export default function RefuelingsScreen() {
         <View style={styles.header}>
           <View>
             <Text style={[styles.title, { color: theme.text }]}>Abastecimentos</Text>
-            <Text style={[styles.subtitle, { color: theme.textMuted }]}>
-              {vehicle ? `${vehicle.name} (${vehicle.plate})` : 'Nenhum veículo ativo'}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+              <Text style={[styles.subtitle, { color: theme.textMuted }]}>
+                {vehicle ? `${vehicle.name} (${vehicle.plate})` : 'Nenhum veículo ativo'}
+              </Text>
+              {isSwitchingVehicle && (
+                <View
+                  style={[
+                    styles.switchingBadge,
+                    {
+                      backgroundColor: isDark
+                        ? 'rgba(16, 185, 129, 0.2)'
+                        : 'rgba(16, 185, 129, 0.12)',
+                    },
+                  ]}
+                >
+                  <Text style={[styles.switchingBadgeText, { color: theme.accent }]}>
+                    Carregando...
+                  </Text>
+                </View>
+              )}
+            </View>
           </View>
           <TouchableOpacity
-            style={[styles.addBtn, { backgroundColor: theme.accent }]}
+            disabled={isSwitchingVehicle}
+            style={[
+              styles.addBtn,
+              { backgroundColor: theme.accent, opacity: isSwitchingVehicle ? 0.6 : 1 },
+            ]}
             onPress={handleOpenModal}
           >
             <Ionicons name="add" size={20} color="#FFFFFF" />
@@ -319,23 +398,30 @@ export default function RefuelingsScreen() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.vehicleChipsRow}>
               {vehicles.map((v) => {
                 const isSelected = v.id === vehicle?.id;
+                const isLoadingThis = isSelected && isSwitchingVehicle;
                 return (
                   <TouchableOpacity
                     key={v.id}
+                    disabled={isSwitchingVehicle}
                     style={[
                       styles.vehicleChip,
                       {
                         backgroundColor: isSelected ? theme.accent : theme.card,
                         borderColor: isSelected ? theme.accent : theme.cardBorder,
+                        opacity: isSwitchingVehicle && !isSelected ? 0.6 : 1,
                       },
                     ]}
                     onPress={() => handleSelectVehicle(v)}
                   >
-                    <Ionicons
-                      name={v.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
-                      size={15}
-                      color={isSelected ? '#FFFFFF' : theme.accent}
-                    />
+                    {isLoadingThis ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 2 }} />
+                    ) : (
+                      <Ionicons
+                        name={v.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
+                        size={15}
+                        color={isSelected ? '#FFFFFF' : theme.accent}
+                      />
+                    )}
                     <Text style={[styles.vehicleChipText, { color: isSelected ? '#FFFFFF' : theme.text }]}>
                       {v.name}
                     </Text>
@@ -350,7 +436,7 @@ export default function RefuelingsScreen() {
         )}
 
         {/* RESUMO GERAL DO VEÍCULO (KPIS) */}
-        {refuelings.length > 0 && (
+        {!isSwitchingVehicle && !loading && refuelings.length > 0 && (
           <View style={[styles.summaryCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
             <View style={styles.kpiItem}>
               <Text style={[styles.kpiLabel, { color: theme.textMuted }]}>Média Geral</Text>
@@ -385,12 +471,21 @@ export default function RefuelingsScreen() {
           </View>
         )}
 
-        {/* LOADING */}
-        {loading && refuelings.length === 0 ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={theme.accent} />
-            <Text style={[styles.loadingText, { color: theme.textMuted }]}>
-              Carregando abastecimentos do Firestore...
+        {/* LOADING (INICIAL OU DURANTE TROCA DE VEÍCULO) */}
+        {loading || isSwitchingVehicle ? (
+          <View style={[styles.loadingContainer, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <View style={[styles.loadingIconCircle, { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : 'rgba(16, 185, 129, 0.1)' }]}>
+              <ActivityIndicator size="large" color={theme.accent} />
+            </View>
+            <Text style={[styles.loadingTitle, { color: theme.text }]}>
+              {isSwitchingVehicle
+                ? `Carregando dados de ${vehicle?.name || 'veículo'}...`
+                : 'Carregando abastecimentos...'}
+            </Text>
+            <Text style={[styles.loadingSubtitle, { color: theme.textMuted }]}>
+              {isSwitchingVehicle
+                ? 'Aguarde enquanto os abastecimentos e médias estão sendo preparados.'
+                : 'Sincronizando com o banco de dados...'}
             </Text>
           </View>
         ) : (
@@ -526,7 +621,11 @@ export default function RefuelingsScreen() {
                     {vehicle?.name} ({vehicle?.plate})
                   </Text>
                 </View>
-                <TouchableOpacity onPress={() => setModalVisible(false)}>
+                <TouchableOpacity
+                  onPress={() => !saving && setModalVisible(false)}
+                  disabled={saving}
+                  style={{ opacity: saving ? 0.5 : 1 }}
+                >
                   <Ionicons name="close-circle" size={24} color={theme.textMuted} />
                 </TouchableOpacity>
               </View>
@@ -550,7 +649,7 @@ export default function RefuelingsScreen() {
                               borderColor: isSelected ? theme.accent : theme.cardBorder,
                             },
                           ]}
-                          onPress={() => setFuelType(f)}
+                          onPress={() => handleSelectFuelType(f)}
                         >
                           <Text
                             style={[
@@ -691,10 +790,29 @@ export default function RefuelingsScreen() {
                 </View>
 
                 <TouchableOpacity
-                  style={[styles.saveBtn, { backgroundColor: theme.accent }]}
+                  style={[
+                    styles.saveBtn,
+                    {
+                      backgroundColor: theme.accent,
+                      opacity: saving ? 0.7 : 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                    },
+                  ]}
                   onPress={handleSave}
+                  disabled={saving}
+                  activeOpacity={0.8}
                 >
-                  <Text style={styles.saveBtnText}>Salvar Abastecimento</Text>
+                  {saving ? (
+                    <>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <Text style={styles.saveBtnText}>Salvando Abastecimento...</Text>
+                    </>
+                  ) : (
+                    <Text style={styles.saveBtnText}>Salvar Abastecimento</Text>
+                  )}
                 </TouchableOpacity>
               </ScrollView>
             </View>
@@ -798,11 +916,40 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 12,
+    padding: 24,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginVertical: 8,
+    gap: 8,
   },
-  loadingText: {
+  loadingIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  loadingTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  loadingSubtitle: {
     fontSize: 13,
     fontWeight: '500',
+    textAlign: 'center',
+    maxWidth: 280,
+    lineHeight: 18,
+  },
+  switchingBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  switchingBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
   },
   listContent: {
     gap: 12,
