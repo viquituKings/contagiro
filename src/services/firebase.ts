@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 // @ts-expect-error getReactNativePersistence exists in the React Native runtime bundle of firebase/auth
 import { initializeAuth, getReactNativePersistence, getAuth, Auth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
+import { getStorage, FirebaseStorage } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const firebaseConfig = {
@@ -29,4 +30,8 @@ try {
 // Inicializa o Cloud Firestore
 const db: Firestore = getFirestore(app);
 
-export { app, auth, db };
+// Inicializa o Firebase Storage
+const storage: FirebaseStorage = getStorage(app);
+
+export { app, auth, db, storage };
+

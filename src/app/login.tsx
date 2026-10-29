@@ -64,8 +64,10 @@ export default function LoginScreen() {
   const handleGoogleLogin = async () => {
     setGoogleLoading(true);
     try {
-      await loginWithGoogle();
-      router.replace('/(tabs)');
+      const loggedIn = await loginWithGoogle();
+      if (loggedIn) {
+        router.replace('/(tabs)');
+      }
     } catch (error: unknown) {
       const err = error as { code?: string; message?: string };
       const msg = err.code ? getFirebaseAuthErrorMessage(err.code) : (err.message || 'Erro ao autenticar com o Google.');

@@ -57,6 +57,7 @@ export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknow
     currentOdometer: Number(data.kmAtual ?? data.ultimoKm ?? 0),
     fuelType,
     acceptedFuelTypes,
+    photoUrl: (data.photoUrl as string) || (data.fotoUrl as string) || undefined,
     flexEfficiencyRatio: Number(data.flexEfficiencyRatio) || 0.70,
     vehicleType: (data.tipoVeiculo === 'moto' ? 'moto' : 'carro') as VehicleType,
     engineDisplacement: data.cilindrada ? Number(data.cilindrada) : undefined,
@@ -376,6 +377,8 @@ export const StorageService = {
           ultimoComb: vehicle.fuelType === 'etanol' ? 'Etanol' : vehicle.fuelType === 'diesel' ? 'Diesel' : 'Gasolina',
           combustiveisAceitos: vehicle.acceptedFuelTypes || [vehicle.fuelType],
           acceptedFuelTypes: vehicle.acceptedFuelTypes || [vehicle.fuelType],
+          photoUrl: vehicle.photoUrl || null,
+          fotoUrl: vehicle.photoUrl || null,
           cadManPeriodica: vehicle.cadManPeriodica ?? false,
         };
 
