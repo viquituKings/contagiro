@@ -18,6 +18,8 @@ export function getFirebaseAuthErrorMessage(errorCode: string): string {
       return 'Erro de conexão com a internet. Verifique sua rede.';
     case 'auth/popup-closed-by-user':
       return 'A janela de autenticação foi fechada antes de concluir o login.';
+    case 'auth/invalid-profile-attribute':
+      return 'Atributo de perfil inválido. A imagem é muito extensa para o serviço de autenticação.';
     default:
       return 'Ocorreu um erro na autenticação. Tente novamente.';
   }

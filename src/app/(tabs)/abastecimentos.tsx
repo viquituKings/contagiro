@@ -14,6 +14,7 @@ import {
   RefreshControl,
   ScrollView,
   Platform,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,6 +35,7 @@ export default function RefuelingsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [isSelectorExpanded, setIsSelectorExpanded] = useState(false);
   const latestSwitchRequestId = useRef(0);
 
   // Formulário de Abastecimento
@@ -98,6 +100,7 @@ export default function RefuelingsScreen() {
   );
 
   const handleSelectVehicle = async (veh: Vehicle) => {
+    setIsSelectorExpanded(false);
     if (veh.id === vehicle?.id && !isSwitchingVehicle) return;
 
     const requestId = ++latestSwitchRequestId.current;
@@ -351,7 +354,7 @@ export default function RefuelingsScreen() {
       : ['gasolina', 'etanol'];
 
   return (
-    <SafeAreaView edges={['top']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
       <View style={[styles.container, { backgroundColor: theme.bg }]}>
         {/* HEADER */}
         <View style={styles.header}>
@@ -392,47 +395,181 @@ export default function RefuelingsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* SELETOR RÁPIDO DE VEÍCULOS */}
-        {vehicles.length > 0 && (
-          <View style={styles.vehicleChipsContainer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.vehicleChipsRow}>
-              {vehicles.map((v) => {
-                const isSelected = v.id === vehicle?.id;
-                const isLoadingThis = isSelected && isSwitchingVehicle;
-                return (
-                  <TouchableOpacity
-                    key={v.id}
-                    disabled={isSwitchingVehicle}
-                    style={[
-                      styles.vehicleChip,
-                      {
-                        backgroundColor: isSelected ? theme.accent : theme.card,
-                        borderColor: isSelected ? theme.accent : theme.cardBorder,
-                        opacity: isSwitchingVehicle && !isSelected ? 0.6 : 1,
-                      },
-                    ]}
-                    onPress={() => handleSelectVehicle(v)}
-                  >
-                    {isLoadingThis ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 2 }} />
+        {/* SELETOR COMPACTO DE VEÍCULOS */}
+        {!loading && vehicle && (
+          vehicles.length > 1 ? (
+            <View
+              style={[
+                styles.compactSelectorCard,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.cardBorder,
+                },
+              ]}
+            >
+              {isSelectorExpanded ? (
+                /* MODO EXPANDIDO: LISTA VERTICAL COMPACTA */
+                <View style={styles.expandedContainer}>
+                  <View style={styles.expandedHeaderRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons name="car-sport" size={14} color={theme.accent} />
+                      <Text style={[styles.expandedTitle, { color: theme.text }]}>Selecionar Veículo</Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setIsSelectorExpanded(false)}
+                      style={[styles.collapseBtn, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.collapseBtnText, { color: theme.textMuted }]}>Fechar</Text>
+                      <Ionicons name="chevron-up" size={12} color={theme.textMuted} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.compactVerticalList}>
+                    {vehicles.map((v) => {
+                      const isSelected = v.id === vehicle.id;
+                      return (
+                        <TouchableOpacity
+                          key={v.id}
+                          disabled={isSwitchingVehicle}
+                          style={[
+                            styles.compactVehicleRow,
+                            {
+                              backgroundColor: isSelected
+                                ? isDark
+                                  ? 'rgba(16, 185, 129, 0.12)'
+                                  : 'rgba(16, 185, 129, 0.08)'
+                                : theme.bg,
+                              borderColor: isSelected ? theme.accent : theme.cardBorder,
+                              borderWidth: isSelected ? 1.5 : 1,
+                              opacity: isSwitchingVehicle && !isSelected ? 0.6 : 1,
+                            },
+                          ]}
+                          onPress={() => {
+                            handleSelectVehicle(v);
+                            setIsSelectorExpanded(false);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          {v.photoUrl ? (
+                            <Image source={{ uri: v.photoUrl }} style={styles.compactAvatar} />
+                          ) : (
+                            <View
+                              style={[
+                                styles.compactIconCircle,
+                                {
+                                  backgroundColor: isSelected
+                                    ? isDark
+                                      ? 'rgba(16, 185, 129, 0.25)'
+                                      : 'rgba(16, 185, 129, 0.15)'
+                                    : isDark
+                                    ? '#1E293B'
+                                    : '#E2E8F0',
+                                },
+                              ]}
+                            >
+                              <Ionicons
+                                name={v.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
+                                size={14}
+                                color={isSelected ? theme.accent : theme.textMuted}
+                              />
+                            </View>
+                          )}
+
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text
+                              style={[
+                                styles.compactVehicleName,
+                                { color: isSelected ? theme.accent : theme.text },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {v.name}
+                            </Text>
+                            <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]} numberOfLines={1}>
+                              {v.plate} • {v.currentOdometer.toLocaleString('pt-BR')} km
+                            </Text>
+                          </View>
+
+                          {isSelected ? (
+                            <Ionicons name="checkmark-circle" size={18} color={theme.accent} />
+                          ) : (
+                            <Ionicons name="ellipse-outline" size={16} color={theme.textMuted} />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : (
+                /* MODO COMPACTO (PADRÃO): UMA LINHA ELEGANTE */
+                <TouchableOpacity
+                  style={styles.compactTriggerRow}
+                  disabled={isSwitchingVehicle}
+                  onPress={() => setIsSelectorExpanded(true)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.compactTriggerLeft}>
+                    {vehicle.photoUrl ? (
+                      <Image source={{ uri: vehicle.photoUrl }} style={styles.compactAvatar} />
                     ) : (
-                      <Ionicons
-                        name={v.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
-                        size={15}
-                        color={isSelected ? '#FFFFFF' : theme.accent}
-                      />
+                      <View style={[styles.compactIconCircle, { backgroundColor: theme.accentLight }]}>
+                        <Ionicons
+                          name={vehicle.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
+                          size={14}
+                          color={theme.accent}
+                        />
+                      </View>
                     )}
-                    <Text style={[styles.vehicleChipText, { color: isSelected ? '#FFFFFF' : theme.text }]}>
-                      {v.name}
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[styles.compactVehicleName, { color: theme.text }]} numberOfLines={1}>
+                        {vehicle.name}
+                      </Text>
+                      <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]}>
+                        {vehicle.plate} • {vehicle.currentOdometer.toLocaleString('pt-BR')} km
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={[styles.compactSwitchBadge, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                    <Text style={[styles.compactSwitchText, { color: theme.accent }]}>
+                      Trocar ({vehicles.length})
                     </Text>
-                    <Text style={[styles.vehicleChipPlate, { color: isSelected ? 'rgba(255,255,255,0.85)' : theme.textMuted }]}>
-                      ({v.plate})
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
+                    <Ionicons name="chevron-down" size={12} color={theme.accent} />
+                  </View>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            /* APENAS 1 VEÍCULO CADASTRADO: BARRA SLIM */
+            <View style={[styles.singleVehicleSlimBar, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+              {vehicle.photoUrl ? (
+                <Image source={{ uri: vehicle.photoUrl }} style={styles.compactAvatar} />
+              ) : (
+                <View style={[styles.compactIconCircle, { backgroundColor: theme.accentLight }]}>
+                  <Ionicons
+                    name={vehicle.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
+                    size={14}
+                    color={theme.accent}
+                  />
+                </View>
+              )}
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={[styles.compactVehicleName, { color: theme.text }]} numberOfLines={1}>
+                  {vehicle.name}
+                </Text>
+                <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]}>
+                  {vehicle.model} • {vehicle.plate}
+                </Text>
+              </View>
+              <View style={styles.singleVehicleKmBadge}>
+                <Ionicons name="speedometer-outline" size={11} color={theme.textMuted} />
+                <Text style={[styles.singleVehicleKmText, { color: theme.textMuted }]}>
+                  {vehicle.currentOdometer.toLocaleString('pt-BR')} km
+                </Text>
+              </View>
+            </View>
+          )
         )}
 
         {/* RESUMO GERAL DO VEÍCULO (KPIS) */}
@@ -829,7 +966,9 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 0,
     gap: 12,
   },
   header: {
@@ -859,26 +998,120 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontSize: 13,
   },
-  vehicleChipsContainer: {
-    marginVertical: 2,
+  // SELETOR COMPACTO DE VEÍCULOS
+  compactSelectorCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  vehicleChipsRow: {
-    gap: 8,
-  },
-  vehicleChip: {
+  compactTriggerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 20,
+    justifyContent: 'space-between',
+    gap: 8,
+    minHeight: 36,
+  },
+  compactTriggerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    minWidth: 0,
+  },
+  compactAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#0F172A',
+  },
+  compactIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  compactVehicleName: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  compactVehicleMeta: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  compactSwitchBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
     borderWidth: 1,
   },
-  vehicleChipText: {
-    fontSize: 12,
+  compactSwitchText: {
+    fontSize: 11,
     fontWeight: '700',
   },
-  vehicleChipPlate: {
+  expandedContainer: {
+    gap: 6,
+    paddingVertical: 2,
+  },
+  expandedHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 2,
+    marginBottom: 2,
+  },
+  expandedTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  collapseBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingVertical: 3,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  collapseBtnText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  compactVerticalList: {
+    gap: 5,
+  },
+  compactVehicleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    gap: 8,
+  },
+  singleVehicleSlimBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 8,
+  },
+  singleVehicleKmBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  singleVehicleKmText: {
     fontSize: 11,
     fontWeight: '600',
   },
@@ -953,7 +1186,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     gap: 12,
-    paddingBottom: 36,
+    paddingBottom: 8,
   },
   card: {
     padding: 16,

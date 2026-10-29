@@ -11,12 +11,14 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/context/auth-context';
 import { getFirebaseAuthErrorMessage } from '@/utils/firebase-errors';
+import { pickAndOptimizeImage, promptImageSource } from '@/services/image-picker';
 
 export default function RegisterScreen() {
   const colorScheme = useColorScheme();
@@ -31,6 +33,8 @@ export default function RegisterScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [avatarLoading, setAvatarLoading] = useState(false);
 
   const theme = {
     bg: isDark ? '#090D16' : '#F8FAFC',
@@ -41,6 +45,20 @@ export default function RegisterScreen() {
     textMuted: isDark ? '#94A3B8' : '#64748B',
     accent: '#10B981',
     border: isDark ? '#1E293B' : '#E2E8F0',
+  };
+
+  const handleSelectAvatar = async () => {
+    const source = await promptImageSource();
+    if (!source) return;
+    setAvatarLoading(true);
+    try {
+      const result = await pickAndOptimizeImage(source, { targetSize: 320, compress: 0.7 });
+      if (result) {
+        setAvatarUri(result.base64Uri);
+      }
+    } finally {
+      setAvatarLoading(false);
+    }
   };
 
   const handleRegister = async () => {
@@ -63,7 +81,7 @@ export default function RegisterScreen() {
 
     setLoading(true);
     try {
-      await registerWithEmail(email, password, name);
+      await registerWithEmail(email, password, name, avatarUri || undefined);
       Alert.alert('Sucesso', 'Sua conta foi criada com sucesso!', [
         {
           text: 'Continuar',
@@ -82,8 +100,10 @@ export default function RegisterScreen() {
   const handleGoogleLogin = async () => {
     setGoogleLoading(true);
     try {
-      await loginWithGoogle();
-      router.replace('/(tabs)');
+      const loggedIn = await loginWithGoogle();
+      if (loggedIn) {
+        router.replace('/(tabs)');
+      }
     } catch (error: unknown) {
       const err = error as { code?: string; message?: string };
       const msg = err.code ? getFirebaseAuthErrorMessage(err.code) : (err.message || 'Erro ao autenticar com o Google.');
@@ -131,6 +151,38 @@ export default function RegisterScreen() {
               },
             ]}
           >
+            {/* AVATAR DO USUÁRIO */}
+            <View style={styles.avatarPickerContainer}>
+              <TouchableOpacity
+                style={[
+                  styles.avatarCircle,
+                  { backgroundColor: theme.inputBg, borderColor: avatarUri ? theme.accent : theme.border },
+                ]}
+                onPress={handleSelectAvatar}
+                disabled={avatarLoading}
+                activeOpacity={0.8}
+              >
+                {avatarLoading ? (
+                  <ActivityIndicator size="small" color={theme.accent} />
+                ) : avatarUri ? (
+                  <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+                ) : (
+                  <Ionicons name="person" size={42} color={theme.textMuted} />
+                )}
+                <View style={[styles.avatarCameraBadge, { backgroundColor: theme.accent }]}>
+                  <Ionicons name="camera" size={15} color="#FFFFFF" />
+                </View>
+              </TouchableOpacity>
+              <Text style={[styles.avatarHint, { color: theme.textMuted }]}>
+                {avatarUri ? 'Foto de perfil adicionada (toque para alterar)' : 'Toque para adicionar foto de perfil'}
+              </Text>
+              {avatarUri && (
+                <TouchableOpacity onPress={() => setAvatarUri(null)} style={{ marginTop: 4 }}>
+                  <Text style={styles.removePhotoText}>Remover foto</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
             {/* NOME COMPLETO */}
             <View style={styles.inputGroup}>
               <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Nome Completo</Text>
@@ -424,5 +476,52 @@ const styles = StyleSheet.create({
   footerLink: {
     fontSize: 14,
     fontWeight: '800',
+  },
+  avatarPickerContainer: {
+    alignItems: 'center',
+    marginBottom: 20,
+    marginTop: 4,
+  },
+  avatarCircle: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    borderWidth: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+    overflow: 'visible',
+  },
+  avatarImage: {
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+  },
+  avatarCameraBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+  },
+  avatarHint: {
+    fontSize: 12,
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  removePhotoText: {
+    color: '#EF4444',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

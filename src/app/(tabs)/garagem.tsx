@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,6 +20,7 @@ import { useFocusEffect } from 'expo-router';
 import { StorageService } from '@/services/storage';
 import { useAuth } from '@/context/auth-context';
 import { Vehicle, FuelType, VehicleType } from '@/types/vehicle';
+import { pickAndOptimizeImage, promptImageSource } from '@/services/image-picker';
 
 export function formatPlate(text: string): string {
   // Converte para maiúsculo, remove tudo que não for alfanumérico e limita a 7 caracteres
@@ -39,7 +41,7 @@ const FUEL_OPTIONS: { type: FuelType; label: string }[] = [
 export default function GarageScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const { user, logout } = useAuth();
+  const { user, logout, updateUserProfile } = useAuth();
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -60,6 +62,9 @@ export default function GarageScreen() {
   const [currentOdometer, setCurrentOdometer] = useState('');
   const [acceptedFuels, setAcceptedFuels] = useState<FuelType[]>(['gasolina', 'etanol']);
   const [engineDisplacement, setEngineDisplacement] = useState('');
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoLoading, setPhotoLoading] = useState(false);
+  const [userAvatarLoading, setUserAvatarLoading] = useState(false);
 
   const loadData = async (isPull = false) => {
     if (isPull) setRefreshing(true);
@@ -100,6 +105,7 @@ export default function GarageScreen() {
     setCurrentOdometer('');
     setEngineDisplacement('');
     setAcceptedFuels(['gasolina', 'etanol']);
+    setPhotoUrl(null);
     setModalVisible(true);
   };
 
@@ -114,12 +120,45 @@ export default function GarageScreen() {
     setTankCapacity(veh.tankCapacity ? String(veh.tankCapacity) : '50');
     setCurrentOdometer(veh.currentOdometer ? String(veh.currentOdometer) : '0');
     setEngineDisplacement(veh.engineDisplacement ? String(veh.engineDisplacement) : '');
+    setPhotoUrl(veh.photoUrl || null);
     setAcceptedFuels(
       veh.acceptedFuelTypes && veh.acceptedFuelTypes.length > 0
         ? veh.acceptedFuelTypes
         : [veh.fuelType || 'gasolina']
     );
     setModalVisible(true);
+  };
+
+  const handleSelectVehiclePhoto = async () => {
+    const source = await promptImageSource();
+    if (!source) return;
+    setPhotoLoading(true);
+    try {
+      const result = await pickAndOptimizeImage(source, { targetSize: 320, compress: 0.7 });
+      if (result) {
+        setPhotoUrl(result.base64Uri);
+      }
+    } finally {
+      setPhotoLoading(false);
+    }
+  };
+
+  const handleChangeUserAvatar = async () => {
+    const source = await promptImageSource();
+    if (!source) return;
+    setUserAvatarLoading(true);
+    try {
+      const result = await pickAndOptimizeImage(source, { targetSize: 320, compress: 0.7 });
+      if (result) {
+        await updateUserProfile({ photoUrl: result.base64Uri });
+        Alert.alert('Sucesso', 'Foto de perfil atualizada com sucesso!');
+      }
+    } catch (e) {
+      console.error(e);
+      Alert.alert('Erro', 'Não foi possível atualizar a foto de perfil.');
+    } finally {
+      setUserAvatarLoading(false);
+    }
   };
 
   const toggleFuel = (type: FuelType) => {
@@ -174,6 +213,7 @@ export default function GarageScreen() {
           acceptedFuelTypes: acceptedFuels,
           vehicleType: editingVehicle.vehicleType || vehicleType,
           engineDisplacement: dispNum,
+          photoUrl: photoUrl || undefined,
           cadManPeriodica: editingVehicle.cadManPeriodica,
           revisaoKm: editingVehicle.revisaoKm,
           trocaOleoKm: editingVehicle.trocaOleoKm,
@@ -201,6 +241,7 @@ export default function GarageScreen() {
           acceptedFuelTypes: acceptedFuels,
           vehicleType,
           engineDisplacement: dispNum,
+          photoUrl: photoUrl || undefined,
           flexEfficiencyRatio: 0.70,
           cadManPeriodica: false,
           gastoManutencao: 0,
@@ -251,7 +292,7 @@ export default function GarageScreen() {
   };
 
   return (
-    <SafeAreaView edges={['top']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
       <View style={[styles.container, { backgroundColor: theme.bg }]}>
         {/* HEADER */}
         <View style={styles.header}>
@@ -273,9 +314,23 @@ export default function GarageScreen() {
         {/* PERFIL / CONTA DO USUÁRIO */}
         <View style={[styles.userCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
           <View style={styles.userInfo}>
-            <View style={[styles.userAvatar, { backgroundColor: theme.accentLight }]}>
-              <Ionicons name="person" size={20} color={theme.accent} />
-            </View>
+            <TouchableOpacity
+              style={[styles.userAvatar, { backgroundColor: theme.accentLight }]}
+              onPress={handleChangeUserAvatar}
+              disabled={userAvatarLoading}
+              activeOpacity={0.8}
+            >
+              {userAvatarLoading ? (
+                <ActivityIndicator size="small" color={theme.accent} />
+              ) : user?.photoURL ? (
+                <Image source={{ uri: user.photoURL }} style={styles.userAvatarImage} />
+              ) : (
+                <Ionicons name="person" size={20} color={theme.accent} />
+              )}
+              <View style={[styles.userAvatarEditBadge, { backgroundColor: theme.accent }]}>
+                <Ionicons name="camera" size={9} color="#FFFFFF" />
+              </View>
+            </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Text style={[styles.userName, { color: theme.text }]}>
                 {user?.displayName || 'Motorista'}
@@ -307,7 +362,7 @@ export default function GarageScreen() {
 
         {/* LOADING INDICATOR QUANDO ABERTO PELA PRIMEIRA VEZ */}
         {loading && vehicles.length === 0 ? (
-          <View style={styles.loadingContainer}>
+          <View style={[styles.loadingContainer, { backgroundColor: theme.bg }]}>
             <ActivityIndicator size="large" color={theme.accent} />
             <Text style={[styles.loadingText, { color: theme.textMuted }]}>
               Buscando veículos no Firestore...
@@ -318,6 +373,7 @@ export default function GarageScreen() {
           <FlatList
             data={vehicles}
             keyExtractor={(item) => item.id}
+            style={{ flex: 1, backgroundColor: theme.bg }}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
             refreshControl={
@@ -358,13 +414,17 @@ export default function GarageScreen() {
                 >
                   <View style={styles.cardHeader}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-                      <View style={[styles.carIconBadge, { backgroundColor: theme.accentLight }]}>
-                        <Ionicons
-                          name={isMoto ? 'bicycle' : 'car-sport'}
-                          size={22}
-                          color={theme.accent}
-                        />
-                      </View>
+                      {item.photoUrl ? (
+                        <Image source={{ uri: item.photoUrl }} style={styles.carPhotoBadge} />
+                      ) : (
+                        <View style={[styles.carIconBadge, { backgroundColor: theme.accentLight }]}>
+                          <Ionicons
+                            name={isMoto ? 'bicycle' : 'car-sport'}
+                            size={22}
+                            color={theme.accent}
+                          />
+                        </View>
+                      )}
                       <View style={{ flex: 1 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                           <Text style={[styles.carName, { color: theme.text }]} numberOfLines={1}>
@@ -491,6 +551,52 @@ export default function GarageScreen() {
               </View>
 
               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+                {/* FOTO / AVATAR DO VEÍCULO */}
+                <View style={styles.vehiclePhotoPickerContainer}>
+                  <TouchableOpacity
+                    style={[
+                      styles.vehiclePhotoBox,
+                      {
+                        backgroundColor: theme.bg,
+                        borderColor: photoUrl ? theme.accent : theme.cardBorder,
+                      },
+                    ]}
+                    onPress={handleSelectVehiclePhoto}
+                    disabled={photoLoading || saving}
+                    activeOpacity={0.8}
+                  >
+                    {photoLoading ? (
+                      <ActivityIndicator size="small" color={theme.accent} />
+                    ) : photoUrl ? (
+                      <Image source={{ uri: photoUrl }} style={styles.vehiclePhotoPreview} />
+                    ) : (
+                      <View style={{ alignItems: 'center', gap: 6 }}>
+                        <Ionicons
+                          name={vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
+                          size={34}
+                          color={theme.textMuted}
+                        />
+                        <Text style={[styles.vehiclePhotoHint, { color: theme.textMuted }]}>
+                          Adicionar Foto do Veículo
+                        </Text>
+                      </View>
+                    )}
+                    <View style={[styles.photoCameraBadge, { backgroundColor: theme.accent }]}>
+                      <Ionicons name="camera" size={13} color="#FFFFFF" />
+                    </View>
+                  </TouchableOpacity>
+
+                  {photoUrl && (
+                    <TouchableOpacity
+                      onPress={() => setPhotoUrl(null)}
+                      style={{ marginTop: 6 }}
+                      disabled={saving}
+                    >
+                      <Text style={styles.removePhotoText}>Remover foto do veículo</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
                 {/* SELETOR CARRO / MOTO */}
                 <View style={styles.typeSelectorRow}>
                   <TouchableOpacity
@@ -783,14 +889,16 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    padding: 16,
-    gap: 14,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 0,
+    gap: 12,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 4,
+    marginTop: 2,
   },
   title: {
     fontSize: 24,
@@ -825,7 +933,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     gap: 12,
-    paddingBottom: 36,
+    paddingBottom: 8,
   },
   emptyCard: {
     padding: 32,
@@ -1114,5 +1222,71 @@ const styles = StyleSheet.create({
   logoutText: {
     fontSize: 12,
     fontWeight: '700',
+  },
+  carPhotoBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+  },
+  userAvatarImage: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+  },
+  userAvatarEditBadge: {
+    position: 'absolute',
+    bottom: -3,
+    right: -3,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+  },
+  vehiclePhotoPickerContainer: {
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  vehiclePhotoBox: {
+    width: '100%',
+    height: 120,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  vehiclePhotoPreview: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  photoCameraBadge: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.25,
+    shadowRadius: 2,
+  },
+  vehiclePhotoHint: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  removePhotoText: {
+    color: '#EF4444',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
