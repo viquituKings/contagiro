@@ -226,7 +226,11 @@ export const SyncService = {
             if (vehicle.totalGastoAbast != null) docData.totalGastoAbast = vehicle.totalGastoAbast;
             if (vehicle.totalLitrosAbast != null) docData.totalLitrosAbast = vehicle.totalLitrosAbast;
             if (vehicle.mediaGeralKmPorLitro != null) docData.mediaGeralKmPorLitro = vehicle.mediaGeralKmPorLitro;
+            if (vehicle.custoMedioPorKm != null) docData.custoMedioPorKm = vehicle.custoMedioPorKm;
             if (vehicle.qtdAbastecimentos != null) docData.qtdAbastecimentos = vehicle.qtdAbastecimentos;
+            if (vehicle.qtdManutencoes != null) docData.qtdManutencoes = vehicle.qtdManutencoes;
+            if (vehicle.order != null) docData.ordem = vehicle.order;
+            if (vehicle.isPreferred != null) docData.preferido = vehicle.isPreferred;
 
             if (effectiveVehId && !effectiveVehId.startsWith('veh-')) {
               await setDoc(doc(db, 'users', userEmail, 'veiculos', effectiveVehId), docData, { merge: true });

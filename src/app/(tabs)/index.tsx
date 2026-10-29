@@ -334,8 +334,9 @@ export default function DashboardScreen() {
                   </View>
 
                   <View style={styles.compactVerticalList}>
-                    {vehicles.map((v) => {
+                    {vehicles.map((v, index) => {
                       const isSelected = v.id === vehicle.id;
+                      const isPreferred = v.isPreferred || index === 0;
                       return (
                         <TouchableOpacity
                           key={v.id}
@@ -383,15 +384,20 @@ export default function DashboardScreen() {
                           )}
 
                           <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text
-                              style={[
-                                styles.compactVehicleName,
-                                { color: isSelected ? theme.accent : theme.text },
-                              ]}
-                              numberOfLines={1}
-                            >
-                              {v.name}
-                            </Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                              <Text
+                                style={[
+                                  styles.compactVehicleName,
+                                  { color: isSelected ? theme.accent : theme.text },
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {v.name}
+                              </Text>
+                              {isPreferred && (
+                                <Ionicons name="star" size={12} color="#F59E0B" />
+                              )}
+                            </View>
                             <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]} numberOfLines={1}>
                               {v.plate} • {v.currentOdometer.toLocaleString('pt-BR')} km
                             </Text>
@@ -427,9 +433,14 @@ export default function DashboardScreen() {
                       </View>
                     )}
                     <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={[styles.compactVehicleName, { color: theme.text }]} numberOfLines={1}>
-                        {vehicle.name}
-                      </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        <Text style={[styles.compactVehicleName, { color: theme.text }]} numberOfLines={1}>
+                          {vehicle.name}
+                        </Text>
+                        {(vehicle.isPreferred || vehicles[0]?.id === vehicle.id) && (
+                          <Ionicons name="star" size={12} color="#F59E0B" />
+                        )}
+                      </View>
                       <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]}>
                         {vehicle.plate} • {vehicle.currentOdometer.toLocaleString('pt-BR')} km
                       </Text>

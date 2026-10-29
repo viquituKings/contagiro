@@ -16,6 +16,15 @@ import { Vehicle, Refueling, MaintenanceItem, MaintenanceCategory, FuelType, Veh
 import { SyncService } from '@/services/sync-service';
 import { compareDatesDesc } from '@/utils/date';
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs = 3500): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout de rede Firestore')), timeoutMs)
+    ),
+  ]);
+}
+
 export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknown>): Vehicle {
   const brand = (data.marca as string) || '';
   const modelName = (data.modelo as string) || '';
@@ -86,7 +95,11 @@ export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknow
     totalGastoAbast: data.totalGastoAbast != null ? Number(data.totalGastoAbast) : undefined,
     totalLitrosAbast: data.totalLitrosAbast != null ? Number(data.totalLitrosAbast) : undefined,
     mediaGeralKmPorLitro: data.mediaGeralKmPorLitro != null ? Number(data.mediaGeralKmPorLitro) : undefined,
+    custoMedioPorKm: data.custoMedioPorKm != null ? Number(data.custoMedioPorKm) : (data.costPerKm != null ? Number(data.costPerKm) : undefined),
     qtdAbastecimentos: data.qtdAbastecimentos != null ? Number(data.qtdAbastecimentos) : undefined,
+    qtdManutencoes: data.qtdManutencoes != null ? Number(data.qtdManutencoes) : undefined,
+    order: data.ordem != null ? Number(data.ordem) : (data.order != null ? Number(data.order) : undefined),
+    isPreferred: Boolean(data.preferido ?? data.isPreferred),
   };
 }
 
@@ -183,6 +196,7 @@ export function mapFirestoreDocToMaintenance(id: string, data: Record<string, un
 const STORAGE_KEYS = {
   VEHICLES: '@contagiro:vehicles_v1',
   ACTIVE_VEHICLE: '@contagiro:active_vehicle_id_v1',
+  PREFERRED_VEHICLE: '@contagiro:preferred_vehicle_id_v1',
   REFUELINGS: '@contagiro:refuelings_v1',
   MAINTENANCES: '@contagiro:maintenances_v1',
   HAS_SEEDED: '@contagiro:has_seeded_v1',
@@ -201,6 +215,8 @@ const DEMO_VEHICLES: Vehicle[] = [
     currentOdometer: 38450,
     fuelType: 'gasolina',
     flexEfficiencyRatio: 0.70,
+    order: 0,
+    isPreferred: true,
   },
   {
     id: 'veh-2',
@@ -212,6 +228,8 @@ const DEMO_VEHICLES: Vehicle[] = [
     currentOdometer: 62100,
     fuelType: 'etanol',
     flexEfficiencyRatio: 0.72,
+    order: 1,
+    isPreferred: false,
   },
 ];
 
@@ -304,12 +322,35 @@ const DEMO_MAINTENANCES: MaintenanceItem[] = [
   },
 ];
 
+export function sortVehiclesByOrder(vehicles: Vehicle[], preferredId?: string | null): Vehicle[] {
+  return [...vehicles].sort((a, b) => {
+    const aPref = a.isPreferred || (preferredId ? a.id === preferredId : false);
+    const bPref = b.isPreferred || (preferredId ? b.id === preferredId : false);
+    if (aPref && !bPref) return -1;
+    if (!aPref && bPref) return 1;
+
+    const aOrder = a.order != null ? a.order : 999;
+    const bOrder = b.order != null ? b.order : 999;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+
+    return 0;
+  });
+}
+
+let hasCheckedLegacyMedias = false;
+let isPreloading = false;
+let hasPreloadedOfflineData = false;
+
 export const StorageService = {
-  // Inicialização de semente (apenas na 1ª vez e se não logado)
+  // Inicialização de semente e pré-carregamento offline
   async init(): Promise<void> {
     try {
       if (auth.currentUser?.email) {
-        await this.getVehicles();
+        if (!hasPreloadedOfflineData && !isPreloading) {
+          this.preloadOfflineData().catch((err) => {
+            console.warn('Aviso: Erro em preloadOfflineData durante init:', err);
+          });
+        }
         return;
       }
       const seeded = await AsyncStorage.getItem(STORAGE_KEYS.HAS_SEEDED);
@@ -330,7 +371,10 @@ export const StorageService = {
     const userEmail = auth.currentUser?.email;
     if (userEmail) {
       try {
-        const querySnapshot = await getDocs(collection(db, 'users', userEmail, 'veiculos'));
+        const querySnapshot = await withTimeout(
+          getDocs(collection(db, 'users', userEmail, 'veiculos')),
+          3500
+        );
         let list: Vehicle[] = [];
         if (!querySnapshot.empty) {
           list = querySnapshot.docs.map((d) =>
@@ -366,6 +410,42 @@ export const StorageService = {
           console.warn('Aviso: Falha ao mesclar fila de pendências em getVehicles:', errQueue);
         }
 
+        // Preserva ordem, preferência e totalizadores já calculados e em cache local
+        try {
+          const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+          if (cachedRaw) {
+            const cachedList: Vehicle[] = JSON.parse(cachedRaw);
+            list = list.map((v) => {
+              const prev = cachedList.find((c) => c.id === v.id);
+              if (!prev) return v;
+              return {
+                ...v,
+                order: v.order ?? prev.order,
+                isPreferred: v.isPreferred ?? prev.isPreferred,
+                totalGastoAbast: v.totalGastoAbast ?? prev.totalGastoAbast,
+                totalLitrosAbast: v.totalLitrosAbast ?? prev.totalLitrosAbast,
+                mediaGeralKmPorLitro: v.mediaGeralKmPorLitro ?? prev.mediaGeralKmPorLitro,
+                custoMedioPorKm: v.custoMedioPorKm ?? prev.custoMedioPorKm,
+                qtdAbastecimentos: v.qtdAbastecimentos ?? prev.qtdAbastecimentos,
+                gastoManutencao: v.gastoManutencao ?? prev.gastoManutencao,
+                qtdManutencoes: v.qtdManutencoes ?? prev.qtdManutencoes,
+              };
+            });
+          }
+        } catch {}
+
+        const preferredId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+        list = sortVehiclesByOrder(list, preferredId);
+
+        // Atualiza a flag isPreferred e order em conformidade com o topo
+        if (list.length > 0) {
+          list.forEach((v, idx) => {
+            v.order = idx;
+            v.isPreferred = idx === 0;
+          });
+          await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, list[0].id);
+        }
+
         await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(list));
 
         // Garante que o veículo ativo seja válido para a conta
@@ -383,7 +463,9 @@ export const StorageService = {
 
     try {
       const json = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
-      return json ? JSON.parse(json) : [];
+      const preferredId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+      const list: Vehicle[] = json ? JSON.parse(json) : [];
+      return sortVehiclesByOrder(list, preferredId);
     } catch {
       return [];
     }
@@ -443,7 +525,11 @@ export const StorageService = {
         if (vehicle.totalGastoAbast != null) docData.totalGastoAbast = vehicle.totalGastoAbast;
         if (vehicle.totalLitrosAbast != null) docData.totalLitrosAbast = vehicle.totalLitrosAbast;
         if (vehicle.mediaGeralKmPorLitro != null) docData.mediaGeralKmPorLitro = vehicle.mediaGeralKmPorLitro;
+        if (vehicle.custoMedioPorKm != null) docData.custoMedioPorKm = vehicle.custoMedioPorKm;
         if (vehicle.qtdAbastecimentos != null) docData.qtdAbastecimentos = vehicle.qtdAbastecimentos;
+        if (vehicle.qtdManutencoes != null) docData.qtdManutencoes = vehicle.qtdManutencoes;
+        if (vehicle.order != null) docData.ordem = vehicle.order;
+        if (vehicle.isPreferred != null) docData.preferido = vehicle.isPreferred;
 
         if (vehicle.id && !vehicle.id.startsWith('veh-')) {
           await setDoc(doc(db, 'users', userEmail, 'veiculos', vehicle.id), docData, { merge: true });
@@ -469,9 +555,16 @@ export const StorageService = {
     if (index >= 0) {
       vehicles[index] = vehicle;
     } else {
+      if (vehicle.order == null) vehicle.order = vehicles.length;
+      if (vehicle.isPreferred == null) vehicle.isPreferred = vehicles.length === 0;
       vehicles.push(vehicle);
     }
-    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(vehicles));
+    const prefId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+    const sorted = sortVehiclesByOrder(vehicles, prefId);
+    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(sorted));
+    if (sorted.length > 0 && !prefId) {
+      await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, sorted[0].id);
+    }
   },
 
   async deleteVehicle(vehicleId: string): Promise<void> {
@@ -495,6 +588,15 @@ export const StorageService = {
     const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
     const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
     const remaining = vehicles.filter((v) => v.id !== vehicleId);
+    if (remaining.length > 0) {
+      remaining.forEach((v, idx) => {
+        v.order = idx;
+        v.isPreferred = idx === 0;
+      });
+      await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, remaining[0].id);
+    } else {
+      await AsyncStorage.removeItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+    }
     await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(remaining));
     const active = await this.getActiveVehicleId();
     if (active === vehicleId && remaining.length > 0) {
@@ -527,67 +629,431 @@ export const StorageService = {
     return vehicles.find((v) => v.id === activeId) || vehicles[0] || null;
   },
 
-
-  // TOTALIZADORES E RECALCULO DE METRICAS
-  async recalculateVehicleStats(userEmail: string, vehicleId: string): Promise<void> {
+  // ORDENAÇÃO E PREFERÊNCIA DE VEÍCULOS (VEÍCULO PREFERIDO NO TOPO)
+  async getPreferredVehicleId(): Promise<string | null> {
     try {
-      const subSnap = await getDocs(
-        collection(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos')
-      );
-      if (subSnap.empty) {
-        await setDoc(
-          doc(db, 'users', userEmail, 'veiculos', vehicleId),
-          {
-            totalGastoAbast: 0,
-            totalLitrosAbast: 0,
-            mediaGeralKmPorLitro: 0,
-            qtdAbastecimentos: 0,
-          },
-          { merge: true }
-        );
-        return;
+      const prefId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+      if (prefId) return prefId;
+      const list = await this.getVehicles();
+      const preferred = list.find((v) => v.isPreferred) || list[0];
+      return preferred?.id || null;
+    } catch {
+      return null;
+    }
+  },
+
+  async setPreferredVehicle(vehicleId: string): Promise<Vehicle[]> {
+    const list = await this.getVehicles();
+    const targetIdx = list.findIndex((v) => v.id === vehicleId);
+    if (targetIdx < 0) return list;
+
+    // Move o veículo escolhido para a primeira posição (topo)
+    const [selected] = list.splice(targetIdx, 1);
+    list.unshift(selected);
+
+    // Atualiza os índices de ordem e o status de preferido
+    list.forEach((v, idx) => {
+      v.order = idx;
+      v.isPreferred = idx === 0;
+    });
+
+    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(list));
+    await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, vehicleId);
+    await AsyncStorage.setItem(STORAGE_KEYS.ACTIVE_VEHICLE, vehicleId);
+
+    const userEmail = auth.currentUser?.email;
+    if (userEmail) {
+      try {
+        const batch = writeBatch(db);
+        list.forEach((v) => {
+          if (!v.id.startsWith('veh-')) {
+            const vRef = doc(db, 'users', userEmail, 'veiculos', v.id);
+            batch.set(vRef, { ordem: v.order, preferido: v.isPreferred }, { merge: true });
+          }
+        });
+        await batch.commit();
+      } catch (err) {
+        console.warn('Offline: Falha ao sincronizar preferência no Firestore:', err);
+        for (const v of list) {
+          await SyncService.enqueue('SAVE_VEHICLE', v.id, v);
+        }
+      }
+    }
+
+    return list;
+  },
+
+  async moveVehicle(vehicleId: string, direction: 'up' | 'down'): Promise<Vehicle[]> {
+    const list = await this.getVehicles();
+    const idx = list.findIndex((v) => v.id === vehicleId);
+    if (idx < 0) return list;
+
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= list.length) return list;
+
+    // Inverte as posições
+    const temp = list[idx];
+    list[idx] = list[targetIdx];
+    list[targetIdx] = temp;
+
+    // Atualiza order e isPreferred (o primeiro é sempre o preferido no topo)
+    list.forEach((v, i) => {
+      v.order = i;
+      v.isPreferred = i === 0;
+    });
+
+    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(list));
+    if (list.length > 0) {
+      await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, list[0].id);
+    }
+
+    const userEmail = auth.currentUser?.email;
+    if (userEmail) {
+      try {
+        const batch = writeBatch(db);
+        list.forEach((v) => {
+          if (!v.id.startsWith('veh-')) {
+            const vRef = doc(db, 'users', userEmail, 'veiculos', v.id);
+            batch.set(vRef, { ordem: v.order, preferido: v.isPreferred }, { merge: true });
+          }
+        });
+        await batch.commit();
+      } catch (err) {
+        console.warn('Offline: Falha ao sincronizar movimento de veículo no Firestore:', err);
+        for (const v of list) {
+          await SyncService.enqueue('SAVE_VEHICLE', v.id, v);
+        }
+      }
+    }
+
+    return list;
+  },
+
+  async reorderVehicles(orderedVehicleIds: string[]): Promise<Vehicle[]> {
+    const list = await this.getVehicles();
+    const reordered: Vehicle[] = [];
+
+    orderedVehicleIds.forEach((id) => {
+      const v = list.find((item) => item.id === id);
+      if (v) reordered.push(v);
+    });
+
+    list.forEach((v) => {
+      if (!reordered.some((item) => item.id === v.id)) {
+        reordered.push(v);
+      }
+    });
+
+    reordered.forEach((v, idx) => {
+      v.order = idx;
+      v.isPreferred = idx === 0;
+    });
+
+    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(reordered));
+    if (reordered.length > 0) {
+      await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, reordered[0].id);
+    }
+
+    const userEmail = auth.currentUser?.email;
+    if (userEmail) {
+      try {
+        const batch = writeBatch(db);
+        reordered.forEach((v) => {
+          if (!v.id.startsWith('veh-')) {
+            const vRef = doc(db, 'users', userEmail, 'veiculos', v.id);
+            batch.set(vRef, { ordem: v.order, preferido: v.isPreferred }, { merge: true });
+          }
+        });
+        await batch.commit();
+      } catch (err) {
+        console.warn('Offline: Falha ao salvar reordenação no Firestore:', err);
+        for (const v of reordered) {
+          await SyncService.enqueue('SAVE_VEHICLE', v.id, v);
+        }
+      }
+    }
+
+    return reordered;
+  },
+
+
+  // TOTALIZADORES E RECALCULO DE METRICAS (DISPONÍVEIS ONLINE E OFFLINE)
+  async updateVehicleTotalizers(
+    vehicleId: string,
+    userEmailParam?: string,
+    refuelingsParam?: Refueling[],
+    maintenancesParam?: MaintenanceItem[]
+  ): Promise<Vehicle | null> {
+    try {
+      const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+      const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
+      const vehicle = vehicles.find((v) => v.id === vehicleId);
+      if (!vehicle) return null;
+
+      // 1. Obtém abastecimentos do veículo sem recursão (lê do cache local)
+      let refuelings = refuelingsParam;
+      if (!refuelings) {
+        try {
+          const cachedRefs = await AsyncStorage.getItem(STORAGE_KEYS.REFUELINGS + '_' + vehicleId);
+          if (cachedRefs) {
+            refuelings = JSON.parse(cachedRefs);
+          } else {
+            const allRefsRaw = await AsyncStorage.getItem(STORAGE_KEYS.REFUELINGS);
+            const allRefs: Refueling[] = allRefsRaw ? JSON.parse(allRefsRaw) : [];
+            refuelings = allRefs.filter((r) => r.vehicleId === vehicleId);
+          }
+        } catch {
+          refuelings = [];
+        }
       }
 
-      let totalGasto = 0;
-      let totalLitros = 0;
+      let totalGastoAbast = 0;
+      let totalLitrosAbast = 0;
       const validConsumptions: number[] = [];
+      const validCostsPerKm: number[] = [];
 
-      subSnap.docs.forEach((d) => {
-        const data = d.data();
-        const l = Number(data.qdtAbastecida ?? data.liters ?? 0);
-        const p = Number(data.valorLitro ?? data.pricePerLiter ?? 0);
-        const t = data.totalAmount != null ? Number(data.totalAmount) : l * p;
-        totalGasto += t;
-        totalLitros += l;
-        const m = Number(data.media ?? data.consumptionKmPerLiter);
+      (refuelings || []).forEach((r) => {
+        const amount = Number(r.totalAmount || 0);
+        const liters = Number(r.liters || 0);
+        totalGastoAbast += amount;
+        totalLitrosAbast += liters;
+
+        const m = Number(r.consumptionKmPerLiter);
         if (!isNaN(m) && m > 0 && m < 50) {
           validConsumptions.push(m);
         }
+
+        const c = Number(r.costPerKm);
+        if (!isNaN(c) && c > 0) {
+          validCostsPerKm.push(c);
+        }
       });
 
-      const avgConsumption =
-        validConsumptions.length > 0
-          ? Number((validConsumptions.reduce((a, b) => a + b, 0) / validConsumptions.length).toFixed(2))
-          : 0;
+      const mediaGeralKmPorLitro = validConsumptions.length > 0
+        ? Number((validConsumptions.reduce((a, b) => a + b, 0) / validConsumptions.length).toFixed(2))
+        : 0;
 
-      await setDoc(
-        doc(db, 'users', userEmail, 'veiculos', vehicleId),
-        {
-          totalGastoAbast: Number(totalGasto.toFixed(2)),
-          totalLitrosAbast: Number(totalLitros.toFixed(2)),
-          mediaGeralKmPorLitro: avgConsumption,
-          qtdAbastecimentos: subSnap.docs.length,
-        },
-        { merge: true }
-      );
+      const custoMedioPorKm = validCostsPerKm.length > 0
+        ? Number((validCostsPerKm.reduce((a, b) => a + b, 0) / validCostsPerKm.length).toFixed(2))
+        : 0;
+
+      // 2. Obtém manutenções do veículo sem recursão (lê do cache local)
+      let maintenances = maintenancesParam;
+      if (!maintenances) {
+        try {
+          const cachedMnts = await AsyncStorage.getItem(STORAGE_KEYS.MAINTENANCES + '_' + vehicleId);
+          if (cachedMnts) {
+            maintenances = JSON.parse(cachedMnts);
+          } else {
+            const allMntsRaw = await AsyncStorage.getItem(STORAGE_KEYS.MAINTENANCES);
+            const allMnts: MaintenanceItem[] = allMntsRaw ? JSON.parse(allMntsRaw) : [];
+            maintenances = allMnts.filter((m) => m.vehicleId === vehicleId);
+          }
+        } catch {
+          maintenances = [];
+        }
+      }
+
+      const gastoManutencao = (maintenances || []).reduce((acc, m) => acc + Number(m.cost || 0), 0);
+
+      // 3. Atualiza os totalizadores no objeto Vehicle
+      vehicle.totalGastoAbast = Number(totalGastoAbast.toFixed(2));
+      vehicle.totalLitrosAbast = Number(totalLitrosAbast.toFixed(2));
+      vehicle.mediaGeralKmPorLitro = mediaGeralKmPorLitro;
+      vehicle.custoMedioPorKm = custoMedioPorKm;
+      vehicle.qtdAbastecimentos = (refuelings || []).length;
+      vehicle.gastoManutencao = Number(gastoManutencao.toFixed(2));
+      vehicle.qtdManutencoes = (maintenances || []).length;
+
+      // 4. Salva imediatamente no cache local AsyncStorage
+      const idx = vehicles.findIndex((v) => v.id === vehicleId);
+      if (idx >= 0) {
+        vehicles[idx] = vehicle;
+        await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(vehicles));
+      }
+
+      // 5. Se estiver online e for ID válido, sincroniza no Firestore
+      const userEmail = userEmailParam || auth.currentUser?.email;
+      if (userEmail && !vehicleId.startsWith('veh-')) {
+        try {
+          await setDoc(
+            doc(db, 'users', userEmail, 'veiculos', vehicleId),
+            {
+              totalGastoAbast: vehicle.totalGastoAbast,
+              totalLitrosAbast: vehicle.totalLitrosAbast,
+              mediaGeralKmPorLitro: vehicle.mediaGeralKmPorLitro,
+              custoMedioPorKm: vehicle.custoMedioPorKm,
+              qtdAbastecimentos: vehicle.qtdAbastecimentos,
+              gastoManutencao: vehicle.gastoManutencao,
+              qtdManutencoes: vehicle.qtdManutencoes,
+            },
+            { merge: true }
+          );
+        } catch (e) {
+          console.warn('Offline: Falha ao enviar totalizadores para Firestore:', e);
+        }
+      }
+
+      return vehicle;
     } catch (e) {
-      console.warn('Erro ao recalcular estatísticas do veículo:', e);
+      console.warn('Erro ao atualizar totalizadores do veículo:', e);
+      return null;
+    }
+  },
+
+  async recalculateVehicleStats(userEmailOrVehId: string, vehicleId?: string): Promise<void> {
+    const targetVehId = vehicleId || userEmailOrVehId;
+    const targetEmail = vehicleId ? userEmailOrVehId : undefined;
+    await this.updateVehicleTotalizers(targetVehId, targetEmail);
+  },
+
+  /**
+   * Sincroniza e pré-carrega proativamente todas as informações necessárias para operação offline:
+   * 1. Todas as informações de cadastro dos veículos (foto, marca, modelo, placa, ano, quilometragem, tanque, combustíveis aceitos, cilindrada, tipo de veículo)
+   * 2. Os 5 últimos abastecimentos (ou histórico completo) de TODOS os veículos
+   * 3. Os 5 últimos registros de manutenção (ou histórico completo) de TODOS os veículos
+   * 4. Todos os totalizadores calculados e persistidos localmente em cada veículo (médias de consumo, custos por km, total gasto em abastecimentos, total gasto em oficina)
+   */
+  async preloadOfflineData(force = false): Promise<void> {
+    const userEmail = auth.currentUser?.email;
+    if (!userEmail) return;
+    if (isPreloading) return;
+    if (hasPreloadedOfflineData && !force) return;
+
+    isPreloading = true;
+    try {
+      // 1. Busca todos os veículos do Firestore com timeout
+      const vehSnap = await withTimeout(
+        getDocs(collection(db, 'users', userEmail, 'veiculos')),
+        4000
+      );
+      if (vehSnap.empty) return;
+
+      const vehicles: Vehicle[] = vehSnap.docs.map((d) =>
+        mapFirestoreDocToVehicle(d.id, d.data() as Record<string, unknown>)
+      );
+
+      // 2. Busca todas as manutenções do Firestore com timeout
+      let allMaintenances: MaintenanceItem[] = [];
+      try {
+        const maintSnap = await withTimeout(
+          getDocs(collection(db, 'users', userEmail, 'manutencoes')),
+          4000
+        );
+        allMaintenances = maintSnap.docs.map((d) =>
+          mapFirestoreDocToMaintenance(d.id, d.data())
+        );
+      } catch (e) {
+        console.warn('Aviso: Falha ao carregar manutenções em preloadOfflineData:', e);
+      }
+
+      // Salva no cache geral de manutenções
+      await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(allMaintenances));
+
+      // 3. Para cada veículo, carrega abastecimentos da subcoleção e manutenções dedicadas em paralelo
+      let allRefuelings: Refueling[] = [];
+
+      await Promise.all(
+        vehicles.map(async (vehicle) => {
+          try {
+            const abastSnap = await withTimeout(
+              getDocs(collection(db, 'users', userEmail, 'veiculos', vehicle.id, 'abastecimentos')),
+              4000
+            );
+            const vRefuelings: Refueling[] = abastSnap.docs.map((d) =>
+              mapFirestoreDocToRefueling(d.id, { ...d.data(), idVeiculo: vehicle.id })
+            );
+            const sortedVRefuelings = vRefuelings.sort(compareDatesDesc);
+
+            // Salva no cache individual do veículo
+            await AsyncStorage.setItem(
+              STORAGE_KEYS.REFUELINGS + '_' + vehicle.id,
+              JSON.stringify(sortedVRefuelings)
+            );
+
+            allRefuelings = allRefuelings.concat(sortedVRefuelings);
+
+            // Salva as manutenções dedicadas do veículo
+            const vMaintenances = allMaintenances
+              .filter((m) => m.vehicleId === vehicle.id)
+              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+            await AsyncStorage.setItem(
+              STORAGE_KEYS.MAINTENANCES + '_' + vehicle.id,
+              JSON.stringify(vMaintenances)
+            );
+
+            // Calcula todos os totalizadores do veículo
+            let totalGastoAbast = 0;
+            let totalLitrosAbast = 0;
+            const validConsumptions: number[] = [];
+            const validCostsPerKm: number[] = [];
+
+            sortedVRefuelings.forEach((r) => {
+              totalGastoAbast += Number(r.totalAmount || 0);
+              totalLitrosAbast += Number(r.liters || 0);
+              if (typeof r.consumptionKmPerLiter === 'number' && r.consumptionKmPerLiter > 0 && r.consumptionKmPerLiter < 50) {
+                validConsumptions.push(r.consumptionKmPerLiter);
+              }
+              if (typeof r.costPerKm === 'number' && r.costPerKm > 0) {
+                validCostsPerKm.push(r.costPerKm);
+              }
+            });
+
+            const mediaGeralKmPorLitro = validConsumptions.length > 0
+              ? Number((validConsumptions.reduce((a, b) => a + b, 0) / validConsumptions.length).toFixed(2))
+              : 0;
+
+            const custoMedioPorKm = validCostsPerKm.length > 0
+              ? Number((validCostsPerKm.reduce((a, b) => a + b, 0) / validCostsPerKm.length).toFixed(2))
+              : 0;
+
+            const gastoManutencao = vMaintenances.reduce((acc, m) => acc + Number(m.cost || 0), 0);
+
+            vehicle.totalGastoAbast = Number(totalGastoAbast.toFixed(2));
+            vehicle.totalLitrosAbast = Number(totalLitrosAbast.toFixed(2));
+            vehicle.mediaGeralKmPorLitro = mediaGeralKmPorLitro;
+            vehicle.custoMedioPorKm = custoMedioPorKm;
+            vehicle.qtdAbastecimentos = sortedVRefuelings.length;
+            vehicle.gastoManutencao = Number(gastoManutencao.toFixed(2));
+            vehicle.qtdManutencoes = vMaintenances.length;
+          } catch (e) {
+            console.warn(`Aviso: Erro ao carregar dados do veículo ${vehicle.id}:`, e);
+          }
+        })
+      );
+
+      // 4. Salva a lista completa com todos os cadastros, totalizadores e ordenação em cache local
+      const preferredId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+      const sortedVehicles = sortVehiclesByOrder(vehicles, preferredId);
+      if (sortedVehicles.length > 0) {
+        sortedVehicles.forEach((v, idx) => {
+          v.order = idx;
+          v.isPreferred = idx === 0;
+        });
+        await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, sortedVehicles[0].id);
+      }
+      await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(sortedVehicles));
+
+      // 5. Salva a lista agregada de abastecimentos em cache local
+      await AsyncStorage.setItem(
+        STORAGE_KEYS.REFUELINGS,
+        JSON.stringify(allRefuelings.sort(compareDatesDesc))
+      );
+
+      hasPreloadedOfflineData = true;
+    } catch (err) {
+      console.warn('Aviso: Falha ao pré-carregar dados para modo offline:', err);
+    } finally {
+      isPreloading = false;
     }
   },
 
   // MIGRAÇÃO INTELIGENTE DE ESTRUTURA (medias -> veiculos/{id}/abastecimentos)
   async migrateLegacyMedias(userEmail: string): Promise<number> {
+    if (hasCheckedLegacyMedias) return 0;
     try {
+      hasCheckedLegacyMedias = true;
       const legacySnap = await getDocs(collection(db, 'users', userEmail, 'medias'));
       if (legacySnap.empty) return 0;
 
@@ -652,8 +1118,9 @@ export const StorageService = {
         await this.migrateLegacyMedias(userEmail);
 
         if (vehicleId) {
-          const subSnap = await getDocs(
-            collection(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos')
+          const subSnap = await withTimeout(
+            getDocs(collection(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos')),
+            3500
           );
           let list: Refueling[] = subSnap.docs.map((d) =>
             mapFirestoreDocToRefueling(d.id, { ...d.data(), idVeiculo: vehicleId })
@@ -690,18 +1157,27 @@ export const StorageService = {
           await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS + '_' + vehicleId, JSON.stringify(list));
           return list.sort(compareDatesDesc);
         } else {
-          // Busca agregada de todos os veículos
+          // Busca agregada paralela de todos os veículos
           const vehicles = await this.getVehicles();
-          let allList: Refueling[] = [];
-          for (const v of vehicles) {
-            const subSnap = await getDocs(
-              collection(db, 'users', userEmail, 'veiculos', v.id, 'abastecimentos')
-            );
-            const vList = subSnap.docs.map((d) =>
-              mapFirestoreDocToRefueling(d.id, { ...d.data(), idVeiculo: v.id })
-            );
-            allList = allList.concat(vList);
-          }
+          const results = await Promise.all(
+            vehicles.map(async (v) => {
+              try {
+                const subSnap = await withTimeout(
+                  getDocs(collection(db, 'users', userEmail, 'veiculos', v.id, 'abastecimentos')),
+                  3500
+                );
+                const vList = subSnap.docs.map((d) =>
+                  mapFirestoreDocToRefueling(d.id, { ...d.data(), idVeiculo: v.id })
+                );
+                await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS + '_' + v.id, JSON.stringify(vList));
+                return vList;
+              } catch {
+                const cached = await AsyncStorage.getItem(STORAGE_KEYS.REFUELINGS + '_' + v.id);
+                return cached ? (JSON.parse(cached) as Refueling[]) : [];
+              }
+            })
+          );
+          let allList: Refueling[] = results.flat();
 
           // PRESERVAÇÃO DE DADOS OFFLINE:
           try {
@@ -882,6 +1358,9 @@ export const StorageService = {
       await this.saveVehicle(vehicle);
     }
 
+    // Garante recálculo dos totalizadores tanto online quanto offline
+    await this.updateVehicleTotalizers(refueling.vehicleId);
+
     return calculatedRefueling;
   },
 
@@ -918,6 +1397,7 @@ export const StorageService = {
     if (effectiveVehId) {
       const cached = (await this.getRefuelings(effectiveVehId)).filter((r) => r.id !== id);
       await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS + '_' + effectiveVehId, JSON.stringify(cached));
+      await this.updateVehicleTotalizers(effectiveVehId);
     }
     const remaining = all.filter((r) => r.id !== id);
     await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS, JSON.stringify(remaining));
@@ -928,7 +1408,10 @@ export const StorageService = {
     const userEmail = auth.currentUser?.email;
     if (userEmail) {
       try {
-        const snap = await getDocs(collection(db, 'users', userEmail, 'manutencoes'));
+        const snap = await withTimeout(
+          getDocs(collection(db, 'users', userEmail, 'manutencoes')),
+          3500
+        );
         let list: MaintenanceItem[] = snap.docs.map((d) =>
           mapFirestoreDocToMaintenance(d.id, d.data())
         );
@@ -957,6 +1440,17 @@ export const StorageService = {
         }
 
         await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(list));
+
+        // Atualiza cache individual por veículo para acesso offline ágil
+        try {
+          const vehiclesRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+          const vList: Vehicle[] = vehiclesRaw ? JSON.parse(vehiclesRaw) : [];
+          for (const v of vList) {
+            const forV = list.filter((m) => m.vehicleId === v.id);
+            await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES + '_' + v.id, JSON.stringify(forV));
+          }
+        } catch {}
+
         if (vehicleId) {
           return list
             .filter((m) => m.vehicleId === vehicleId)
@@ -969,6 +1463,13 @@ export const StorageService = {
     }
 
     try {
+      if (vehicleId) {
+        const cached = await AsyncStorage.getItem(STORAGE_KEYS.MAINTENANCES + '_' + vehicleId);
+        if (cached) {
+          const parsed: MaintenanceItem[] = JSON.parse(cached);
+          return parsed.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        }
+      }
       const json = await AsyncStorage.getItem(STORAGE_KEYS.MAINTENANCES);
       const all: MaintenanceItem[] = json ? JSON.parse(json) : [];
       if (vehicleId) {
@@ -1095,11 +1596,27 @@ export const StorageService = {
     else all.unshift(calculatedMnt);
     await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(all));
 
+    // Atualiza cache específico do veículo
+    if (calculatedMnt.vehicleId) {
+      const vehicleKey = STORAGE_KEYS.MAINTENANCES + '_' + calculatedMnt.vehicleId;
+      const cachedVeh = await this.getMaintenances(calculatedMnt.vehicleId);
+      const vIdx = cachedVeh.findIndex((m) => m.id === calculatedMnt.id);
+      if (vIdx >= 0) cachedVeh[vIdx] = calculatedMnt;
+      else cachedVeh.unshift(calculatedMnt);
+      await AsyncStorage.setItem(vehicleKey, JSON.stringify(cachedVeh));
+
+      // Atualiza totalizadores do veículo tanto online quanto offline
+      await this.updateVehicleTotalizers(calculatedMnt.vehicleId);
+    }
+
     return calculatedMnt;
   },
 
   async deleteMaintenance(id: string): Promise<void> {
     const userEmail = auth.currentUser?.email;
+    const all = await this.getMaintenances();
+    const itemToDelete = all.find((m) => m.id === id);
+    const vehicleId = itemToDelete?.vehicleId;
     let deletedOnline = false;
 
     if (userEmail && !id.startsWith('mnt-')) {
@@ -1116,8 +1633,17 @@ export const StorageService = {
       await SyncService.enqueue('DELETE_MAINTENANCE', id, { id });
     }
 
-    const all = (await this.getMaintenances()).filter((m) => m.id !== id);
-    await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(all));
+    if (vehicleId) {
+      const cached = (await this.getMaintenances(vehicleId)).filter((m) => m.id !== id);
+      await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES + '_' + vehicleId, JSON.stringify(cached));
+    }
+
+    const remaining = all.filter((m) => m.id !== id);
+    await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(remaining));
+
+    if (vehicleId) {
+      await this.updateVehicleTotalizers(vehicleId);
+    }
   },
 
   // CONFIGURAÇÃO DA PERIODICIDADE DAS MANUTENÇÕES DO VEÍCULO (CADASTRO E EDIÇÃO)
@@ -1235,7 +1761,7 @@ export const StorageService = {
     if (userEmail) {
       try {
         const docRef = doc(db, 'users', userEmail, 'configuracoes', 'precosCombustivel');
-        const snap = await getDoc(docRef);
+        const snap = await withTimeout(getDoc(docRef), 3500);
         if (snap.exists()) {
           const data = snap.data();
           const prices: FuelPrices = {

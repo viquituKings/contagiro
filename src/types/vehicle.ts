@@ -45,6 +45,10 @@ export interface Vehicle {
   totalLitrosAbast?: number;
   mediaGeralKmPorLitro?: number;
   qtdAbastecimentos?: number;
+  custoMedioPorKm?: number;
+  qtdManutencoes?: number;
+  order?: number;
+  isPreferred?: boolean;
 }
 
 export interface Refueling {

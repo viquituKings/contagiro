@@ -91,6 +91,28 @@ export default function GarageScreen() {
     setActiveId(id);
   };
 
+  const handleSetPreferred = async (id: string) => {
+    try {
+      const updatedList = await StorageService.setPreferredVehicle(id);
+      setVehicles(updatedList);
+      setActiveId(id);
+    } catch (err) {
+      console.error('Erro ao definir veículo preferido:', err);
+    }
+  };
+
+  const handleMoveVehicle = async (id: string, direction: 'up' | 'down') => {
+    try {
+      const updatedList = await StorageService.moveVehicle(id, direction);
+      setVehicles(updatedList);
+      if (updatedList.length > 0) {
+        setActiveId(updatedList[0].id);
+      }
+    } catch (err) {
+      console.error('Erro ao mover veículo:', err);
+    }
+  };
+
   const handleOpenAdd = () => {
     setEditingVehicle(null);
     setVehicleType('carro');
@@ -379,12 +401,34 @@ export default function GarageScreen() {
                 </Text>
               </View>
             }
-            renderItem={({ item }) => {
+            ListHeaderComponent={
+              vehicles.length > 1 ? (
+                <View
+                  style={[
+                    styles.orderTipBox,
+                    {
+                      backgroundColor: isDark ? 'rgba(245, 158, 11, 0.08)' : '#FFFBEB',
+                      borderColor: isDark ? 'rgba(245, 158, 11, 0.25)' : '#FDE68A',
+                    },
+                  ]}
+                >
+                  <Ionicons name="sparkles" size={14} color="#D97706" />
+                  <Text style={[styles.orderTipText, { color: isDark ? '#FCD34D' : '#92400E' }]}>
+                    {'O veículo no topo é o preferido do app. Use ▲ / ▼ ou "Tornar Topo" para reordenar.'}
+                  </Text>
+                </View>
+              ) : undefined
+            }
+            renderItem={({ item, index }) => {
               const isActive = item.id === activeId;
+              const isPreferred = index === 0;
               const isMoto = item.vehicleType === 'moto';
               const fuelsDisplay = item.acceptedFuelTypes && item.acceptedFuelTypes.length > 0
                 ? item.acceptedFuelTypes.join(' / ')
                 : item.fuelType;
+              const displayBrandModel = item.brand && !item.model?.toLowerCase().includes(item.brand.toLowerCase())
+                ? `${item.brand} ${item.model}`
+                : (item.model || item.name);
 
               return (
                 <TouchableOpacity
@@ -423,13 +467,53 @@ export default function GarageScreen() {
                           </View>
                         </View>
                         <Text style={[styles.carModel, { color: theme.textMuted }]} numberOfLines={1}>
-                          {item.model} • {item.year} {item.engineDisplacement ? `• ${item.engineDisplacement}cc` : ''}
+                          {displayBrandModel} • {item.year} {item.engineDisplacement ? `• ${item.engineDisplacement}cc` : ''}
                         </Text>
                       </View>
                     </View>
 
-                    <View style={styles.plateBadge}>
-                      <Text style={styles.plateText}>{item.plate}</Text>
+                    <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                      <View style={styles.plateBadge}>
+                        <Text style={styles.plateText}>{item.plate}</Text>
+                      </View>
+                      {isPreferred ? (
+                        <View
+                          style={[
+                            styles.preferredBadge,
+                            {
+                              backgroundColor: isDark
+                                ? 'rgba(245, 158, 11, 0.16)'
+                                : '#FEF3C7',
+                            },
+                          ]}
+                        >
+                          <Ionicons name="star" size={11} color="#D97706" />
+                          <Text
+                            style={[
+                              styles.preferredBadgeText,
+                              { color: isDark ? '#FBBF24' : '#B45309' },
+                            ]}
+                          >
+                            Preferido
+                          </Text>
+                        </View>
+                      ) : (
+                        vehicles.length > 1 && (
+                          <TouchableOpacity
+                            style={[
+                              styles.makePreferredBtn,
+                              { borderColor: isDark ? '#334155' : '#E2E8F0' },
+                            ]}
+                            onPress={() => handleSetPreferred(item.id)}
+                            hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                          >
+                            <Ionicons name="star-outline" size={11} color={theme.textMuted} />
+                            <Text style={[styles.makePreferredBtnText, { color: theme.textMuted }]}>
+                              Tornar Topo
+                            </Text>
+                          </TouchableOpacity>
+                        )
+                      )}
                     </View>
                   </View>
 
@@ -471,14 +555,50 @@ export default function GarageScreen() {
                     </View>
                   )}
 
-                  {item.gastoManutencao != null && item.gastoManutencao > 0 && (
-                    <View style={styles.gastoRow}>
-                      <Ionicons name="build-outline" size={13} color={theme.textMuted} />
-                      <Text style={[styles.gastoText, { color: theme.textMuted }]}>
-                        Total em oficina: R$ {item.gastoManutencao.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  {/* TOTALIZADORES DO VEÍCULO (DISPONÍVEIS OFFLINE) */}
+                  <View style={[styles.statsGridRow, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#F8FAFC', borderColor: theme.cardBorder }]}>
+                    <View style={styles.statMiniCol}>
+                      <Text style={[styles.statMiniLabel, { color: theme.textMuted }]}>Consumo</Text>
+                      <Text style={[styles.statMiniValue, { color: theme.text }]} numberOfLines={1}>
+                        {item.mediaGeralKmPorLitro && item.mediaGeralKmPorLitro > 0
+                          ? `${item.mediaGeralKmPorLitro.toLocaleString('pt-BR')} km/L`
+                          : '--'}
                       </Text>
                     </View>
-                  )}
+
+                    <View style={[styles.statMiniDivider, { backgroundColor: theme.cardBorder }]} />
+
+                    <View style={styles.statMiniCol}>
+                      <Text style={[styles.statMiniLabel, { color: theme.textMuted }]}>Custo/km</Text>
+                      <Text style={[styles.statMiniValue, { color: theme.text }]} numberOfLines={1}>
+                        {item.custoMedioPorKm && item.custoMedioPorKm > 0
+                          ? `R$ ${item.custoMedioPorKm.toFixed(2)}`
+                          : '--'}
+                      </Text>
+                    </View>
+
+                    <View style={[styles.statMiniDivider, { backgroundColor: theme.cardBorder }]} />
+
+                    <View style={styles.statMiniCol}>
+                      <Text style={[styles.statMiniLabel, { color: theme.textMuted }]}>Combustível</Text>
+                      <Text style={[styles.statMiniValue, { color: theme.text }]} numberOfLines={1}>
+                        {item.totalGastoAbast != null && item.totalGastoAbast > 0
+                          ? `R$ ${item.totalGastoAbast.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                          : '--'}
+                      </Text>
+                    </View>
+
+                    <View style={[styles.statMiniDivider, { backgroundColor: theme.cardBorder }]} />
+
+                    <View style={styles.statMiniCol}>
+                      <Text style={[styles.statMiniLabel, { color: theme.textMuted }]}>Oficina</Text>
+                      <Text style={[styles.statMiniValue, { color: theme.text }]} numberOfLines={1}>
+                        {item.gastoManutencao != null && item.gastoManutencao > 0
+                          ? `R$ ${item.gastoManutencao.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                          : '--'}
+                      </Text>
+                    </View>
+                  </View>
 
                   <View style={[styles.cardFooter, { borderTopColor: theme.cardBorder }]}>
                     {isActive ? (
@@ -493,6 +613,43 @@ export default function GarageScreen() {
                     )}
 
                     <View style={styles.cardActionsRow}>
+                      {/* BOTOES DE ORDENAÇÃO */}
+                      {vehicles.length > 1 && (
+                        <View style={styles.reorderButtonsGroup}>
+                          <TouchableOpacity
+                            style={[
+                              styles.reorderArrowBtn,
+                              {
+                                borderColor: theme.cardBorder,
+                                opacity: index === 0 ? 0.25 : 1,
+                                backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F1F5F9',
+                              },
+                            ]}
+                            disabled={index === 0}
+                            onPress={() => handleMoveVehicle(item.id, 'up')}
+                            hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                          >
+                            <Ionicons name="chevron-up" size={15} color={theme.text} />
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={[
+                              styles.reorderArrowBtn,
+                              {
+                                borderColor: theme.cardBorder,
+                                opacity: index === vehicles.length - 1 ? 0.25 : 1,
+                                backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#F1F5F9',
+                              },
+                            ]}
+                            disabled={index === vehicles.length - 1}
+                            onPress={() => handleMoveVehicle(item.id, 'down')}
+                            hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                          >
+                            <Ionicons name="chevron-down" size={15} color={theme.text} />
+                          </TouchableOpacity>
+                        </View>
+                      )}
+
                       {/* BOTÃO EDITAR */}
                       <TouchableOpacity
                         style={[styles.actionBtn, { borderColor: theme.cardBorder }]}
@@ -1292,5 +1449,89 @@ const styles = StyleSheet.create({
     color: '#EF4444',
     fontSize: 12,
     fontWeight: '600',
+  },
+  statsGridRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  statMiniCol: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  statMiniLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    marginBottom: 2,
+    textTransform: 'uppercase',
+  },
+  statMiniValue: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  statMiniDivider: {
+    width: 1,
+    height: 18,
+  },
+  orderTipBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 12,
+  },
+  orderTipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
+  preferredBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  preferredBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  makePreferredBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  makePreferredBtnText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  reorderButtonsGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginRight: 2,
+  },
+  reorderArrowBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
