@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Modal,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,6 +21,7 @@ import { useAuth } from '@/context/auth-context';
 import { useAppTheme } from '@/context/theme-context';
 import { CacheService, CacheStats } from '@/services/cache-service';
 import { promptImageSource, pickAndOptimizeImage } from '@/services/image-picker';
+import { NotificationService } from '@/services/notifications';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -45,6 +47,11 @@ export default function SettingsScreen() {
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
   const [loadingCache, setLoadingCache] = useState(true);
   const [clearingCache, setClearingCache] = useState(false);
+
+  // Estados de Notificações na Bandeja
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [togglingNotifications, setTogglingNotifications] = useState(false);
+  const [testingNotification, setTestingNotification] = useState<'alerta' | 'atencao' | null>(null);
 
   // Estados de Exclusão de Conta
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
@@ -251,6 +258,50 @@ export default function SettingsScreen() {
         },
       ]
     );
+  };
+
+  useEffect(() => {
+    NotificationService.isNotificationsEnabled().then(setNotificationsEnabled);
+  }, []);
+
+  // AÇÃO: Alterar ativação de notificações
+  const handleToggleNotifications = async (value: boolean) => {
+    setTogglingNotifications(true);
+    try {
+      const result = await NotificationService.setNotificationsEnabled(value);
+      setNotificationsEnabled(result);
+      if (value && !result) {
+        Alert.alert(
+          'Permissão Necessária',
+          'Para receber alertas de manutenção na bandeja, habilite as notificações do ContaGiro nas configurações do seu celular.'
+        );
+      } else if (value && result) {
+        Alert.alert(
+          'Notificações Ativadas',
+          'Os alertas (cada 3 dias às 7h) e lembretes (cada 7 dias às 7h) foram agendados na bandeja do seu smartphone.'
+        );
+      }
+    } catch {
+      Alert.alert('Erro', 'Não foi possível atualizar as configurações de notificação.');
+    } finally {
+      setTogglingNotifications(false);
+    }
+  };
+
+  // AÇÃO: Disparar notificação de teste imediata
+  const handleTestNotification = async (type: 'alerta' | 'atencao') => {
+    setTestingNotification(type);
+    try {
+      await NotificationService.sendTestNotification(type);
+      Alert.alert(
+        'Notificação Agendada',
+        'Em 2 segundos a notificação será exibida na bandeja do smartphone. Se quiser, minimize o app para ver o banner na tela!'
+      );
+    } catch (e: any) {
+      Alert.alert('Atenção', e.message || 'Permissão de notificação não concedida nas configurações do dispositivo.');
+    } finally {
+      setTestingNotification(null);
+    }
   };
 
   // AÇÃO: Sair da Conta
@@ -744,6 +795,121 @@ export default function SettingsScreen() {
                 </View>
                 {themePreference === 'auto' && (
                   <Ionicons name="checkmark-circle" size={20} color={theme.accent} />
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* SEÇÃO: NOTIFICAÇÕES DE MANUTENÇÃO NA BANDEJA */}
+          <View style={[styles.sectionCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <View style={styles.sectionHeader}>
+              <View style={[styles.sectionIconBadge, { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : 'rgba(16, 185, 129, 0.1)' }]}>
+                <Ionicons name="notifications-outline" size={18} color={theme.accent} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.sectionTitle, { color: theme.text }]}>Notificações de Manutenção</Text>
+                <Text style={[styles.sectionSubtitle, { color: theme.textMuted }]}>
+                  Avisos automáticos na bandeja do seu celular
+                </Text>
+              </View>
+              {togglingNotifications ? (
+                <ActivityIndicator size="small" color={theme.accent} />
+              ) : (
+                <Switch
+                  value={notificationsEnabled}
+                  onValueChange={handleToggleNotifications}
+                  trackColor={{ false: isDark ? '#334155' : '#CBD5E1', true: theme.accent }}
+                  thumbColor={notificationsEnabled ? '#FFFFFF' : '#F1F5F9'}
+                />
+              )}
+            </View>
+
+            {/* REGRAS DE NOTIFICAÇÃO CONFIGURADAS */}
+            <View style={styles.notificationRulesContainer}>
+              {/* REGRA 1: ALERTA DE MANUTENÇÃO */}
+              <View style={[styles.notificationRuleCard, { backgroundColor: theme.inputBg, borderColor: theme.red + '40' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                  <View style={[styles.ruleIconCircle, { backgroundColor: 'rgba(239, 68, 68, 0.15)' }]}>
+                    <Ionicons name="alert-circle" size={18} color="#EF4444" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2, flexWrap: 'wrap', gap: 4 }}>
+                      <Text style={[styles.ruleHeaderTitle, { color: theme.text }]}>Alerta de manutenção</Text>
+                      <View style={[styles.ruleFrequencyBadge, { backgroundColor: 'rgba(239, 68, 68, 0.12)' }]}>
+                        <Text style={[styles.ruleFrequencyText, { color: '#EF4444' }]}>A cada 3 dias às 7h</Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.ruleMessageSample, { color: theme.text }]}>
+                      Faltam [quantidade de km] km para [nome da manutenção]
+                    </Text>
+                    <Text style={[styles.ruleDetailText, { color: theme.textMuted }]}>
+                      Disparado para serviços em alerta crítico (≤ 15% restante) ou vencidos.
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* REGRA 2: LEMBRETE DE MANUTENÇÃO */}
+              <View style={[styles.notificationRuleCard, { backgroundColor: theme.inputBg, borderColor: theme.warning + '40' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                  <View style={[styles.ruleIconCircle, { backgroundColor: 'rgba(245, 158, 11, 0.15)' }]}>
+                    <Ionicons name="time" size={18} color="#F59E0B" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2, flexWrap: 'wrap', gap: 4 }}>
+                      <Text style={[styles.ruleHeaderTitle, { color: theme.text }]}>Lembrete de manutenção</Text>
+                      <View style={[styles.ruleFrequencyBadge, { backgroundColor: 'rgba(245, 158, 11, 0.12)' }]}>
+                        <Text style={[styles.ruleFrequencyText, { color: '#F59E0B' }]}>A cada 7 dias às 7h</Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.ruleMessageSample, { color: theme.text }]}>
+                      Faltam [quantidade de km] km para [nome da manutenção]
+                    </Text>
+                    <Text style={[styles.ruleDetailText, { color: theme.textMuted }]}>
+                      Disparado para serviços em estado de atenção preventiva (≤ 30% restante).
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            {/* BOTÕES DE TESTE NA BANDEJA */}
+            <View style={styles.testButtonsRow}>
+              <TouchableOpacity
+                style={[
+                  styles.testNotifyBtn,
+                  { borderColor: theme.red + '60', backgroundColor: isDark ? '#1F1419' : '#FEF2F2' },
+                ]}
+                onPress={() => handleTestNotification('alerta')}
+                disabled={testingNotification !== null}
+                activeOpacity={0.7}
+              >
+                {testingNotification === 'alerta' ? (
+                  <ActivityIndicator size="small" color={theme.red} />
+                ) : (
+                  <>
+                    <Ionicons name="notifications-outline" size={15} color={theme.red} />
+                    <Text style={[styles.testNotifyBtnText, { color: theme.red }]}>Testar Alerta (2s)</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.testNotifyBtn,
+                  { borderColor: theme.warning + '60', backgroundColor: isDark ? '#1F1A12' : '#FFFBEB' },
+                ]}
+                onPress={() => handleTestNotification('atencao')}
+                disabled={testingNotification !== null}
+                activeOpacity={0.7}
+              >
+                {testingNotification === 'atencao' ? (
+                  <ActivityIndicator size="small" color="#F59E0B" />
+                ) : (
+                  <>
+                    <Ionicons name="paper-plane-outline" size={15} color="#F59E0B" />
+                    <Text style={[styles.testNotifyBtnText, { color: '#F59E0B' }]}>Testar Lembrete (2s)</Text>
+                  </>
                 )}
               </TouchableOpacity>
             </View>
@@ -1296,6 +1462,64 @@ const styles = StyleSheet.create({
   themeOptionDesc: {
     fontSize: 11,
     marginTop: 1,
+  },
+  // NOTIFICAÇÕES
+  notificationRulesContainer: {
+    gap: 10,
+    marginTop: 8,
+  },
+  notificationRuleCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
+  },
+  ruleIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  ruleHeaderTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  ruleFrequencyBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  ruleFrequencyText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  ruleMessageSample: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginVertical: 4,
+  },
+  ruleDetailText: {
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  testButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  testNotifyBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  testNotifyBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   storageProgressContainer: {
     gap: 8,

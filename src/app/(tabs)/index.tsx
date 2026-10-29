@@ -2,6 +2,7 @@ import { useAppTheme } from '@/context/theme-context';
 import { Calculations } from '@/services/calculations';
 import { StorageService } from '@/services/storage';
 import { SyncService } from '@/services/sync-service';
+import { NotificationService } from '@/services/notifications';
 import { MaintenanceItem, Refueling, Vehicle } from '@/types/vehicle';
 import { formatDateToBR } from '@/utils/date';
 import { Ionicons } from '@expo/vector-icons';
@@ -172,6 +173,7 @@ export default function DashboardScreen() {
       setVehicles((prev) => prev.map((v) => (v.id === updated.id ? updated : v)));
       setOdometerModalVisible(false);
       await loadData(updated.id);
+      NotificationService.syncMaintenanceNotifications().catch(() => {});
     } catch (err) {
       console.error('Erro ao atualizar odômetro:', err);
       Alert.alert('Erro', 'Não foi possível atualizar o odômetro. Tente novamente.');

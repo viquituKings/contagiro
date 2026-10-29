@@ -21,6 +21,7 @@ import { useFocusEffect } from 'expo-router';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { StorageService } from '@/services/storage';
 import { Calculations } from '@/services/calculations';
+import { NotificationService } from '@/services/notifications';
 import { Vehicle, MaintenanceItem, MaintenanceCategory } from '@/types/vehicle';
 import { formatDateToBR } from '@/utils/date';
 
@@ -380,6 +381,7 @@ export default function MaintenancesScreen() {
       await StorageService.addMaintenance(newMnt);
       setModalMntVisible(false);
       await loadData();
+      NotificationService.syncMaintenanceNotifications().catch(() => {});
     } catch (err) {
       console.error('Erro ao salvar manutenção:', err);
       Alert.alert('Erro', 'Ocorreu um erro ao salvar a manutenção. Tente novamente.');
@@ -397,6 +399,7 @@ export default function MaintenancesScreen() {
         onPress: async () => {
           await StorageService.deleteMaintenance(id);
           await loadData();
+          NotificationService.syncMaintenanceNotifications().catch(() => {});
         },
       },
     ]);

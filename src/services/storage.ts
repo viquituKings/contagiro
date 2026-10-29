@@ -340,8 +340,29 @@ export function sortVehiclesByOrder(vehicles: Vehicle[], preferredId?: string | 
 let hasCheckedLegacyMedias = false;
 let isPreloading = false;
 let hasPreloadedOfflineData = false;
+const maintenanceChangeListeners = new Set<() => void>();
 
 export const StorageService = {
+  /**
+   * Registra um listener para notificações de alterações em manutenções ou dados do veículo
+   */
+  onMaintenanceChange(listener: () => void): () => void {
+    maintenanceChangeListeners.add(listener);
+    return () => {
+      maintenanceChangeListeners.delete(listener);
+    };
+  },
+
+  notifyMaintenanceChange(): void {
+    for (const listener of maintenanceChangeListeners) {
+      try {
+        listener();
+      } catch (err) {
+        console.warn('Erro em maintenanceChangeListener:', err);
+      }
+    }
+  },
+
   // Inicialização de semente e pré-carregamento offline
   async init(): Promise<void> {
     try {
@@ -565,6 +586,7 @@ export const StorageService = {
     if (sorted.length > 0 && !prefId) {
       await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, sorted[0].id);
     }
+    this.notifyMaintenanceChange();
   },
 
   async deleteVehicle(vehicleId: string): Promise<void> {
@@ -602,6 +624,7 @@ export const StorageService = {
     if (active === vehicleId && remaining.length > 0) {
       await this.setActiveVehicleId(remaining[0].id);
     }
+    this.notifyMaintenanceChange();
   },
 
   async getActiveVehicleId(): Promise<string | null> {
@@ -1609,6 +1632,7 @@ export const StorageService = {
       await this.updateVehicleTotalizers(calculatedMnt.vehicleId);
     }
 
+    this.notifyMaintenanceChange();
     return calculatedMnt;
   },
 
@@ -1644,6 +1668,7 @@ export const StorageService = {
     if (vehicleId) {
       await this.updateVehicleTotalizers(vehicleId);
     }
+    this.notifyMaintenanceChange();
   },
 
   // CONFIGURAÇÃO DA PERIODICIDADE DAS MANUTENÇÕES DO VEÍCULO (CADASTRO E EDIÇÃO)
