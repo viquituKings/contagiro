@@ -22,6 +22,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { StorageService } from '@/services/storage';
 import { Calculations } from '@/services/calculations';
 import { Vehicle, MaintenanceItem, MaintenanceCategory } from '@/types/vehicle';
+import { formatDateToBR } from '@/utils/date';
 
 export default function MaintenancesScreen() {
   const colorScheme = useColorScheme();
@@ -962,7 +963,7 @@ export default function MaintenancesScreen() {
                     <Text style={[styles.historyTitle, { color: theme.text }]}>{item.title}</Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
                       <Text style={[styles.historyDate, { color: theme.textMuted }]}>
-                        {item.date} • {item.odometer.toLocaleString('pt-BR')} km
+                        {formatDateToBR(item.date)} • {item.odometer.toLocaleString('pt-BR')} km
                       </Text>
                       {Boolean(item.sideLabel || item.side) && (
                         <View style={[styles.sideBadge, { backgroundColor: isDark ? '#1E293B' : '#EEF2F6' }]}>

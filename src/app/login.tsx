@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -11,6 +11,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,6 +31,23 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
 
+  // Controle de teclado e foco para evidenciar campos
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [focusedField, setFocusedField] = useState<'email' | 'password' | null>(null);
+
+  const scrollViewRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const emailInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+  const passwordInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+
+  const cardY = useRef<number>(0);
+  const fieldOffsets = useRef<{ [key: string]: number }>({});
+  const focusedFieldRef = useRef<'email' | 'password' | null>(null);
+
+  useEffect(() => {
+    focusedFieldRef.current = focusedField;
+  }, [focusedField]);
+
   const theme = {
     bg: isDark ? '#090D16' : '#F8FAFC',
     card: isDark ? '#141D2E' : '#FFFFFF',
@@ -40,7 +58,44 @@ export default function LoginScreen() {
     accent: '#10B981',
     accentHover: '#059669',
     border: isDark ? '#1E293B' : '#E2E8F0',
+    focusBg: isDark ? 'rgba(16, 185, 129, 0.08)' : 'rgba(16, 185, 129, 0.05)',
   };
+
+  const scrollToField = (fieldKey: 'email' | 'password') => {
+    setFocusedField(fieldKey);
+    const y = fieldOffsets.current[fieldKey];
+    const targetY = y != null
+      ? Math.max(0, cardY.current + y - 20)
+      : (fieldKey === 'email' ? 70 : 150);
+
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: targetY, animated: true });
+    }, 100);
+  };
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardVisible(true);
+        setKeyboardHeight(e.endCoordinates.height);
+        if (focusedFieldRef.current) {
+          scrollToField(focusedFieldRef.current);
+        }
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardVisible(false);
+        setKeyboardHeight(0);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const handleLogin = async () => {
     if (!email.trim() || !password) {
@@ -111,32 +166,68 @@ export default function LoginScreen() {
     );
   };
 
+  const isEmailFocused = focusedField === 'email';
+  const isPasswordFocused = focusedField === 'password';
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.keyboardView}
       >
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          ref={scrollViewRef}
+          contentContainerStyle={[
+            styles.scrollContent,
+            keyboardVisible && styles.scrollContentKeyboardOpen,
+            {
+              paddingBottom: Platform.OS === 'android' && keyboardVisible
+                ? Math.max(keyboardHeight, 260) + 40
+                : 40,
+            },
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
           {/* HEADER / LOGO */}
-          <View style={styles.brandHeader}>
-            <View style={[styles.logoIconBadge, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
-              <Ionicons name="speedometer" size={44} color={theme.accent} />
+          <View style={[styles.brandHeader, keyboardVisible && styles.brandHeaderCompact]}>
+            <View
+              style={[
+                styles.logoIconBadge,
+                keyboardVisible && styles.logoIconBadgeCompact,
+                { backgroundColor: 'rgba(16, 185, 129, 0.15)' },
+              ]}
+            >
+              <Ionicons
+                name="speedometer"
+                size={keyboardVisible ? 28 : 44}
+                color={theme.accent}
+              />
             </View>
-            <Text style={[styles.brandTitle, { color: theme.text }]}>Contagiro</Text>
-            <Text style={[styles.brandSubtitle, { color: theme.textMuted }]}>
-              Gestão de combustível, consumo e manutenções
+            <Text
+              style={[
+                styles.brandTitle,
+                keyboardVisible && styles.brandTitleCompact,
+                { color: theme.text },
+              ]}
+            >
+              Contagiro
             </Text>
+            {!keyboardVisible && (
+              <Text style={[styles.brandSubtitle, { color: theme.textMuted }]}>
+                Gestão de combustível, consumo e manutenções
+              </Text>
+            )}
           </View>
 
           {/* CARD DE LOGIN */}
           <View
+            onLayout={(e) => {
+              cardY.current = e.nativeEvent.layout.y;
+            }}
             style={[
               styles.card,
+              keyboardVisible && styles.cardCompact,
               {
                 backgroundColor: theme.card,
                 borderColor: theme.cardBorder,
@@ -146,16 +237,33 @@ export default function LoginScreen() {
             <Text style={[styles.cardTitle, { color: theme.text }]}>Acesse sua conta</Text>
 
             {/* CAMPO DE E-MAIL */}
-            <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: theme.textMuted }]}>E-mail</Text>
+            <View
+              style={styles.inputGroup}
+              onLayout={(e) => {
+                fieldOffsets.current['email'] = e.nativeEvent.layout.y;
+              }}
+            >
+              <Text style={[styles.inputLabel, { color: isEmailFocused ? theme.accent : theme.textMuted }]}>
+                E-mail
+              </Text>
               <View
                 style={[
                   styles.inputWrapper,
-                  { backgroundColor: theme.inputBg, borderColor: theme.border },
+                  {
+                    backgroundColor: isEmailFocused ? theme.focusBg : theme.inputBg,
+                    borderColor: isEmailFocused ? theme.accent : theme.border,
+                    borderWidth: isEmailFocused ? 1.5 : 1,
+                  },
                 ]}
               >
-                <Ionicons name="mail-outline" size={20} color={theme.textMuted} style={styles.inputIcon} />
+                <Ionicons
+                  name="mail-outline"
+                  size={20}
+                  color={isEmailFocused ? theme.accent : theme.textMuted}
+                  style={styles.inputIcon}
+                />
                 <TextInput
+                  ref={emailInputRef}
                   style={[styles.input, { color: theme.text }]}
                   placeholder="seu@email.com"
                   placeholderTextColor={theme.textMuted}
@@ -164,14 +272,25 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   keyboardType="email-address"
                   autoCorrect={false}
+                  returnKeyType="next"
+                  onFocus={() => scrollToField('email')}
+                  onBlur={() => setFocusedField(null)}
+                  onSubmitEditing={() => passwordInputRef.current?.focus()}
                 />
               </View>
             </View>
 
             {/* CAMPO DE SENHA */}
-            <View style={styles.inputGroup}>
+            <View
+              style={styles.inputGroup}
+              onLayout={(e) => {
+                fieldOffsets.current['password'] = e.nativeEvent.layout.y;
+              }}
+            >
               <View style={styles.passwordLabelRow}>
-                <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Senha</Text>
+                <Text style={[styles.inputLabel, { color: isPasswordFocused ? theme.accent : theme.textMuted }]}>
+                  Senha
+                </Text>
                 <TouchableOpacity onPress={handleForgotPassword}>
                   <Text style={[styles.forgotPasswordText, { color: theme.accent }]}>
                     Esqueceu a senha?
@@ -181,11 +300,21 @@ export default function LoginScreen() {
               <View
                 style={[
                   styles.inputWrapper,
-                  { backgroundColor: theme.inputBg, borderColor: theme.border },
+                  {
+                    backgroundColor: isPasswordFocused ? theme.focusBg : theme.inputBg,
+                    borderColor: isPasswordFocused ? theme.accent : theme.border,
+                    borderWidth: isPasswordFocused ? 1.5 : 1,
+                  },
                 ]}
               >
-                <Ionicons name="lock-closed-outline" size={20} color={theme.textMuted} style={styles.inputIcon} />
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={20}
+                  color={isPasswordFocused ? theme.accent : theme.textMuted}
+                  style={styles.inputIcon}
+                />
                 <TextInput
+                  ref={passwordInputRef}
                   style={[styles.input, { color: theme.text }]}
                   placeholder="Sua senha secreta"
                   placeholderTextColor={theme.textMuted}
@@ -193,6 +322,10 @@ export default function LoginScreen() {
                   onChangeText={setPassword}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
+                  returnKeyType="go"
+                  onFocus={() => scrollToField('password')}
+                  onBlur={() => setFocusedField(null)}
+                  onSubmitEditing={handleLogin}
                 />
                 <TouchableOpacity
                   onPress={() => setShowPassword(!showPassword)}
@@ -201,7 +334,7 @@ export default function LoginScreen() {
                   <Ionicons
                     name={showPassword ? 'eye-off-outline' : 'eye-outline'}
                     size={20}
-                    color={theme.textMuted}
+                    color={isPasswordFocused ? theme.accent : theme.textMuted}
                   />
                 </TouchableOpacity>
               </View>
@@ -285,14 +418,21 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 20,
-    paddingTop: 40,
-    paddingBottom: 30,
-    minHeight: '100%',
+    paddingTop: 36,
+    paddingBottom: 40,
+    flexGrow: 1,
     justifyContent: 'center',
+  },
+  scrollContentKeyboardOpen: {
+    paddingTop: 12,
+    justifyContent: 'flex-start',
   },
   brandHeader: {
     alignItems: 'center',
-    marginBottom: 28,
+    marginBottom: 26,
+  },
+  brandHeaderCompact: {
+    marginBottom: 12,
   },
   logoIconBadge: {
     width: 80,
@@ -302,10 +442,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 14,
   },
+  logoIconBadgeCompact: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    marginBottom: 6,
+  },
   brandTitle: {
     fontSize: 32,
     fontWeight: '900',
     letterSpacing: -0.5,
+  },
+  brandTitleCompact: {
+    fontSize: 22,
   },
   brandSubtitle: {
     fontSize: 14,
@@ -323,10 +472,14 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 4,
   },
+  cardCompact: {
+    padding: 20,
+    borderRadius: 20,
+  },
   cardTitle: {
     fontSize: 20,
     fontWeight: '800',
-    marginBottom: 20,
+    marginBottom: 18,
   },
   inputGroup: {
     marginBottom: 16,
@@ -381,7 +534,7 @@ const styles = StyleSheet.create({
   dividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 20,
+    marginVertical: 18,
   },
   dividerLine: {
     flex: 1,
@@ -410,7 +563,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: 6,
-    marginTop: 28,
+    marginTop: 24,
   },
   footerText: {
     fontSize: 14,

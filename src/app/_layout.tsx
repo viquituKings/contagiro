@@ -1,17 +1,16 @@
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { useColorScheme } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { AuthProvider, useAuth } from '@/context/auth-context';
+import { ThemeProvider, useAppTheme } from '@/context/theme-context';
 import { StorageService } from '@/services/storage';
 import { AppSplashScreen } from '@/components/splash-screen';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function RootNavigation() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark, theme } = useAppTheme();
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
@@ -60,12 +59,19 @@ function RootNavigation() {
         screenOptions={{
           headerShown: false,
           animation: 'fade',
-          contentStyle: { backgroundColor: isDark ? '#090D16' : '#F8FAFC' },
+          contentStyle: { backgroundColor: theme.bg },
         }}
       >
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />
         <Stack.Screen name="cadastro" options={{ headerShown: false }} />
+        <Stack.Screen
+          name="configuracoes"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+          }}
+        />
       </Stack>
 
       {!isSplashDone && (
@@ -80,8 +86,10 @@ function RootNavigation() {
 
 export default function AppLayout() {
   return (
-    <AuthProvider>
-      <RootNavigation />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <RootNavigation />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

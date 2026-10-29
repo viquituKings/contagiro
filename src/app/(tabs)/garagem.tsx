@@ -8,7 +8,6 @@ import {
   Modal,
   TextInput,
   Alert,
-  useColorScheme,
   ActivityIndicator,
   RefreshControl,
   ScrollView,
@@ -16,9 +15,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, router } from 'expo-router';
 import { StorageService } from '@/services/storage';
 import { useAuth } from '@/context/auth-context';
+import { useAppTheme } from '@/context/theme-context';
 import { Vehicle, FuelType, VehicleType } from '@/types/vehicle';
 import { pickAndOptimizeImage, promptImageSource } from '@/services/image-picker';
 
@@ -39,9 +39,8 @@ const FUEL_OPTIONS: { type: FuelType; label: string }[] = [
 ];
 
 export default function GarageScreen() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-  const { user, logout, updateUserProfile } = useAuth();
+  const { isDark } = useAppTheme();
+  const { user, logout } = useAuth();
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -64,7 +63,6 @@ export default function GarageScreen() {
   const [engineDisplacement, setEngineDisplacement] = useState('');
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoLoading, setPhotoLoading] = useState(false);
-  const [userAvatarLoading, setUserAvatarLoading] = useState(false);
 
   const loadData = async (isPull = false) => {
     if (isPull) setRefreshing(true);
@@ -140,24 +138,6 @@ export default function GarageScreen() {
       }
     } finally {
       setPhotoLoading(false);
-    }
-  };
-
-  const handleChangeUserAvatar = async () => {
-    const source = await promptImageSource();
-    if (!source) return;
-    setUserAvatarLoading(true);
-    try {
-      const result = await pickAndOptimizeImage(source, { targetSize: 320, compress: 0.7 });
-      if (result) {
-        await updateUserProfile({ photoUrl: result.base64Uri });
-        Alert.alert('Sucesso', 'Foto de perfil atualizada com sucesso!');
-      }
-    } catch (e) {
-      console.error(e);
-      Alert.alert('Erro', 'Não foi possível atualizar a foto de perfil.');
-    } finally {
-      setUserAvatarLoading(false);
     }
   };
 
@@ -313,51 +293,57 @@ export default function GarageScreen() {
 
         {/* PERFIL / CONTA DO USUÁRIO */}
         <View style={[styles.userCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-          <View style={styles.userInfo}>
-            <TouchableOpacity
-              style={[styles.userAvatar, { backgroundColor: theme.accentLight }]}
-              onPress={handleChangeUserAvatar}
-              disabled={userAvatarLoading}
-              activeOpacity={0.8}
-            >
-              {userAvatarLoading ? (
-                <ActivityIndicator size="small" color={theme.accent} />
-              ) : user?.photoURL ? (
+          <TouchableOpacity
+            style={styles.userInfo}
+            onPress={() => router.push('/configuracoes' as any)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.userAvatar, { backgroundColor: theme.accentLight }]}>
+              {user?.photoURL ? (
                 <Image source={{ uri: user.photoURL }} style={styles.userAvatarImage} />
               ) : (
                 <Ionicons name="person" size={20} color={theme.accent} />
               )}
-              <View style={[styles.userAvatarEditBadge, { backgroundColor: theme.accent }]}>
-                <Ionicons name="camera" size={9} color="#FFFFFF" />
-              </View>
-            </TouchableOpacity>
+            </View>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.userName, { color: theme.text }]}>
+              <Text style={[styles.userName, { color: theme.text }]} numberOfLines={1}>
                 {user?.displayName || 'Motorista'}
               </Text>
               <Text style={[styles.userEmail, { color: theme.textMuted }]} numberOfLines={1}>
                 {user?.email || 'Conectado'}
               </Text>
             </View>
-          </View>
-          <TouchableOpacity
-            style={[styles.logoutBtn, { borderColor: theme.red + '44' }]}
-            onPress={() => {
-              Alert.alert('Sair da Conta', 'Deseja encerrar a sessão atual?', [
-                { text: 'Cancelar', style: 'cancel' },
-                {
-                  text: 'Sair',
-                  style: 'destructive',
-                  onPress: async () => {
-                    await logout();
-                  },
-                },
-              ]);
-            }}
-          >
-            <Ionicons name="log-out-outline" size={16} color={theme.red} />
-            <Text style={[styles.logoutText, { color: theme.red }]}>Sair</Text>
           </TouchableOpacity>
+
+          <View style={styles.userCardActions}>
+            <TouchableOpacity
+              style={[styles.settingsBtn, { borderColor: theme.cardBorder, backgroundColor: theme.bg }]}
+              onPress={() => router.push('/configuracoes' as any)}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="settings-outline" size={16} color={theme.text} />
+              <Text style={[styles.settingsBtnText, { color: theme.text }]}>Configurar</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.logoutBtn, { borderColor: theme.red + '44' }]}
+              onPress={() => {
+                Alert.alert('Sair da Conta', 'Deseja encerrar a sessão atual?', [
+                  { text: 'Cancelar', style: 'cancel' },
+                  {
+                    text: 'Sair',
+                    style: 'destructive',
+                    onPress: async () => {
+                      await logout();
+                    },
+                  },
+                ]);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="log-out-outline" size={16} color={theme.red} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* LOADING INDICATOR QUANDO ABERTO PELA PRIMEIRA VEZ */}
@@ -1214,12 +1200,30 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
     borderRadius: 10,
     borderWidth: 1,
   },
   logoutText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  userCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  settingsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  settingsBtnText: {
     fontSize: 12,
     fontWeight: '700',
   },

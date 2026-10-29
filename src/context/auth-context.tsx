@@ -1,32 +1,59 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Platform, Alert } from 'react-native';
+import { Platform, Alert, TurboModuleRegistry, NativeModules } from 'react-native';
 import {
   User,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
+  updatePassword,
+  reauthenticateWithCredential,
+  EmailAuthProvider,
   signOut,
   sendPasswordResetEmail,
   GoogleAuthProvider,
   signInWithPopup,
   signInWithCredential,
+  deleteUser,
 } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { ref, uploadBytes, uploadString, getDownloadURL } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-  GoogleSignin,
-  isSuccessResponse,
-  isErrorWithCode,
-  statusCodes,
-} from '@react-native-google-signin/google-signin';
-import Constants, { AppOwnership, ExecutionEnvironment } from 'expo-constants';
 import { auth, db, storage } from '@/services/firebase';
+import { StorageService } from '@/services/storage';
 
-const isExpoGo =
-  Constants.appOwnership === AppOwnership.Expo ||
-  Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+/**
+ * Verifica de forma totalmente segura se o módulo nativo RNGoogleSignin está registrado
+ * no binário nativo da plataforma antes de tentar carregar a biblioteca.
+ * No Expo Go ou em ambientes sem o binário nativo compilado, TurboModuleRegistry.get('RNGoogleSignin')
+ * retorna null sem disparar o Invariant Violation (ao contrário de getEnforcing).
+ */
+function isGoogleSigninSupported(): boolean {
+  if (Platform.OS === 'web') return false;
+  try {
+    const turboModule = TurboModuleRegistry?.get ? TurboModuleRegistry.get('RNGoogleSignin') : null;
+    const legacyModule = NativeModules?.RNGoogleSignin ?? null;
+    return Boolean(turboModule || legacyModule);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Carrega dinamicamente a biblioteca nativa do Google Sign-In apenas se o módulo nativo existir.
+ */
+function getGoogleSignin(): typeof import('@react-native-google-signin/google-signin') | null {
+  if (!isGoogleSigninSupported()) {
+    return null;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('@react-native-google-signin/google-signin');
+  } catch (err) {
+    console.warn('Aviso: Módulo nativo GoogleSignin não encontrado no binário:', err);
+    return null;
+  }
+}
 
 /**
  * Valida se uma URL é aceita pelo atributo `photoURL` do Firebase Authentication.
@@ -124,10 +151,12 @@ interface AuthContextData {
   loading: boolean;
   loginWithEmail: (email: string, pass: string) => Promise<void>;
   registerWithEmail: (email: string, pass: string, name: string, photoUrl?: string) => Promise<void>;
-  updateUserProfile: (data: { displayName?: string; photoUrl?: string }) => Promise<void>;
+  updateUserProfile: (data: { displayName?: string; photoUrl?: string | null }) => Promise<void>;
+  changePassword: (newPassword: string, currentPassword?: string) => Promise<void>;
   loginWithGoogle: () => Promise<boolean | void>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
+  deleteAccount: (password?: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextData>({} as AuthContextData);
@@ -138,15 +167,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const googleWebClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
 
-  // Inicializa o Google Sign-In nativo
+  // Inicializa o Google Sign-In nativo apenas se suportado no binário
   useEffect(() => {
-    if (Platform.OS !== 'web' && !isExpoGo && googleWebClientId) {
-      try {
-        GoogleSignin.configure({
-          webClientId: googleWebClientId,
-        });
-      } catch (err) {
-        console.warn('Aviso: Falha ao inicializar GoogleSignin:', err);
+    if (googleWebClientId && isGoogleSigninSupported()) {
+      const gModule = getGoogleSignin();
+      if (gModule?.GoogleSignin) {
+        try {
+          gModule.GoogleSignin.configure({
+            webClientId: googleWebClientId,
+          });
+        } catch (err) {
+          console.warn('Aviso: Falha ao inicializar GoogleSignin:', err);
+        }
       }
     }
   }, [googleWebClientId]);
@@ -167,7 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const cachedProfile = await AsyncStorage.getItem(`@contagiro:user_profile_${emailKey}`);
           if (cachedProfile) {
             const parsed = JSON.parse(cachedProfile);
-            if (parsed.photoUrl) {
+            if (parsed.photoUrl !== undefined) {
               customPhoto = parsed.photoUrl;
             }
           }
@@ -188,7 +220,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const userDoc = await getDoc(doc(db, 'users', emailKey));
           if (userDoc.exists() && isMounted) {
             const data = userDoc.data();
-            if (data?.photoUrl && data.photoUrl !== customPhoto) {
+            if (data?.photoUrl !== undefined && data.photoUrl !== customPhoto) {
               setUser((prev) => (prev ? { ...prev, photoURL: data.photoUrl } : prev));
               await AsyncStorage.setItem(
                 `@contagiro:user_profile_${emailKey}`,
@@ -235,7 +267,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Atualiza o Firebase Auth SOMENTE com photoURL se for uma URL válida (< 2048 caracteres).
-      // Base64 é rejeitado pelo backend do Firebase Auth com Photo URL too long (auth/invalid-profile-attribute).
       if (finalPhotoUrl && isValidAuthPhotoUrl(finalPhotoUrl)) {
         await updateProfile(cred.user, {
           displayName: trimmedName,
@@ -261,14 +292,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const updateUserProfile = async (data: { displayName?: string; photoUrl?: string }) => {
+  const updateUserProfile = async (data: { displayName?: string; photoUrl?: string | null }) => {
     if (!auth.currentUser) return;
     const currentUser = auth.currentUser;
     const userEmail = currentUser.email || '';
 
     let finalPhotoUrl = data.photoUrl;
 
-    if (data.photoUrl && userEmail) {
+    if (data.photoUrl && userEmail && !data.photoUrl.startsWith('http')) {
       finalPhotoUrl = await uploadUserAvatarToStorage(userEmail, data.photoUrl);
     }
 
@@ -279,8 +310,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (finalPhotoUrl !== undefined) {
-      if (isValidAuthPhotoUrl(finalPhotoUrl)) {
+      if (finalPhotoUrl && isValidAuthPhotoUrl(finalPhotoUrl)) {
         authUpdates.photoURL = finalPhotoUrl;
+      } else if (!finalPhotoUrl) {
+        authUpdates.photoURL = '';
       }
     }
 
@@ -289,22 +322,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const effectivePhotoUrl =
-      finalPhotoUrl !== undefined ? finalPhotoUrl : user?.photoURL || currentUser.photoURL;
+      finalPhotoUrl !== undefined ? (finalPhotoUrl || null) : user?.photoURL || currentUser.photoURL;
     const effectiveDisplayName =
       data.displayName !== undefined ? data.displayName.trim() : currentUser.displayName;
 
     if (userEmail) {
       await saveUserProfileToFirestoreAndCache(userEmail, {
         displayName: effectiveDisplayName || undefined,
-        photoUrl: effectivePhotoUrl || null,
+        photoUrl: effectivePhotoUrl,
       });
     }
 
     setUser({
       ...currentUser,
       displayName: effectiveDisplayName,
-      photoURL: effectivePhotoUrl || null,
+      photoURL: effectivePhotoUrl,
     });
+  };
+
+  const changePassword = async (newPassword: string, currentPassword?: string) => {
+    if (!auth.currentUser) {
+      throw new Error('Nenhum usuário conectado.');
+    }
+    const currentUser = auth.currentUser;
+
+    // Se forneceu a senha atual e temos o email do usuário, reautentica primeiro
+    if (currentUser.email && currentPassword) {
+      const cred = EmailAuthProvider.credential(currentUser.email, currentPassword);
+      await reauthenticateWithCredential(currentUser, cred);
+    }
+
+    await updatePassword(currentUser, newPassword);
   };
 
   const loginWithGoogle = async (): Promise<boolean> => {
@@ -315,10 +363,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return true;
     }
 
-    if (isExpoGo) {
+    if (!isGoogleSigninSupported()) {
       throw new Error(
         'O login nativo com Google requer o pacote APK instalado no aparelho ou uma Development Build (npx expo run:android), pois o Expo Go não inclui as bibliotecas nativas do Google Play Services.\n\nPara testar durante o desenvolvimento, use login com E-mail ou execute na Web (npx expo start --web).'
       );
+    }
+
+    const gModule = getGoogleSignin();
+    if (!gModule) {
+      throw new Error('Módulo Google Sign-In não está disponível neste dispositivo.');
     }
 
     if (!googleWebClientId) {
@@ -326,6 +379,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         'Para ativar o login com Google, configure o EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID no seu arquivo .env.'
       );
     }
+
+    const { GoogleSignin, isSuccessResponse } = gModule;
 
     try {
       GoogleSignin.configure({
@@ -348,7 +403,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       return false;
     } catch (error: any) {
-      if (isErrorWithCode(error)) {
+      const gModuleCatch = getGoogleSignin();
+      if (gModuleCatch && gModuleCatch.isErrorWithCode(error)) {
+        const { statusCodes } = gModuleCatch;
         switch (error.code) {
           case statusCodes.SIGN_IN_CANCELLED:
             // Usuário fechou ou cancelou o seletor nativo do Google
@@ -379,8 +436,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     try {
-      if (Platform.OS !== 'web' && !isExpoGo) {
-        await GoogleSignin.signOut().catch(() => {});
+      if (isGoogleSigninSupported()) {
+        const gModule = getGoogleSignin();
+        if (gModule?.GoogleSignin) {
+          await gModule.GoogleSignin.signOut().catch(() => {});
+        }
       }
     } catch {
       // Ignora erro no logout nativo do Google
@@ -392,6 +452,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await sendPasswordResetEmail(auth, email.trim());
   };
 
+  const deleteAccount = async (password?: string) => {
+    if (!auth.currentUser) {
+      throw new Error('Nenhum usuário conectado.');
+    }
+    const currentUser = auth.currentUser;
+    const userEmail = currentUser.email || '';
+
+    // 1. Reautenticação necessária para operações destrutivas no Firebase Auth
+    const isGoogleOnly =
+      currentUser.providerData.some((p) => p.providerId === 'google.com') &&
+      !currentUser.providerData.some((p) => p.providerId === 'password');
+
+    if (!isGoogleOnly && userEmail) {
+      if (!password || !password.trim()) {
+        throw new Error('A senha atual é obrigatória para confirmar a exclusão da conta.');
+      }
+      const credential = EmailAuthProvider.credential(userEmail, password);
+      await reauthenticateWithCredential(currentUser, credential);
+    }
+
+    // 2. Apaga todos os dados do usuário no Firestore, Firebase Storage e AsyncStorage
+    if (userEmail) {
+      await StorageService.deleteAllUserData(userEmail);
+    }
+
+    // 3. Se for usuário Google, desconecta do Google Sign-In nativo
+    try {
+      if (isGoogleSigninSupported()) {
+        const gModule = getGoogleSignin();
+        if (gModule?.GoogleSignin) {
+          await gModule.GoogleSignin.signOut().catch(() => {});
+        }
+      }
+    } catch {
+      // Ignora erro no logout do Google
+    }
+
+    // 4. Exclui o usuário no Firebase Authentication
+    await deleteUser(currentUser);
+
+    // 5. Atualiza o estado
+    setUser(null);
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -400,9 +504,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loginWithEmail,
         registerWithEmail,
         updateUserProfile,
+        changePassword,
         loginWithGoogle,
         logout,
         resetPassword,
+        deleteAccount,
       }}
     >
       {children}

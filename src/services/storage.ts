@@ -9,8 +9,12 @@ import {
   addDoc,
   writeBatch,
 } from 'firebase/firestore';
-import { auth, db } from '@/services/firebase';
+import { auth, db, storage } from '@/services/firebase';
+import { ref as storageRef, deleteObject } from 'firebase/storage';
+import { Image as ExpoImage } from 'expo-image';
 import { Vehicle, Refueling, MaintenanceItem, MaintenanceCategory, FuelType, VehicleType, FuelPrices } from '@/types/vehicle';
+import { SyncService } from '@/services/sync-service';
+import { compareDatesDesc } from '@/utils/date';
 
 export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknown>): Vehicle {
   const brand = (data.marca as string) || '';
@@ -327,23 +331,51 @@ export const StorageService = {
     if (userEmail) {
       try {
         const querySnapshot = await getDocs(collection(db, 'users', userEmail, 'veiculos'));
+        let list: Vehicle[] = [];
         if (!querySnapshot.empty) {
-          const list: Vehicle[] = querySnapshot.docs.map((d) =>
+          list = querySnapshot.docs.map((d) =>
             mapFirestoreDocToVehicle(d.id, d.data() as Record<string, unknown>)
           );
-          await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(list));
+        }
 
-          // Garante que o veículo ativo seja válido para a conta
-          const currentActive = await AsyncStorage.getItem(STORAGE_KEYS.ACTIVE_VEHICLE);
-          if (!currentActive || !list.some((v) => v.id === currentActive)) {
+        // PRESERVAÇÃO DE DADOS OFFLINE:
+        // Mescla veículos criados/editados offline e remove os pendentes de exclusão
+        try {
+          const queue = await SyncService.getQueue();
+          const userKey = userEmail.toLowerCase().trim();
+          const pendingSaves = queue
+            .filter((q) => q.action === 'SAVE_VEHICLE' && q.userEmail === userKey)
+            .map((q) => q.payload as Vehicle);
+          const pendingDeletes = new Set(
+            queue
+              .filter((q) => q.action === 'DELETE_VEHICLE' && q.userEmail === userKey)
+              .map((q) => q.entityId)
+          );
+
+          list = list.filter((v) => !pendingDeletes.has(v.id));
+
+          for (const pv of pendingSaves) {
+            const idx = list.findIndex((v) => v.id === pv.id);
+            if (idx >= 0) {
+              list[idx] = pv;
+            } else {
+              list.push(pv);
+            }
+          }
+        } catch (errQueue) {
+          console.warn('Aviso: Falha ao mesclar fila de pendências em getVehicles:', errQueue);
+        }
+
+        await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(list));
+
+        // Garante que o veículo ativo seja válido para a conta
+        const currentActive = await AsyncStorage.getItem(STORAGE_KEYS.ACTIVE_VEHICLE);
+        if (!currentActive || !list.some((v) => v.id === currentActive)) {
+          if (list.length > 0) {
             await AsyncStorage.setItem(STORAGE_KEYS.ACTIVE_VEHICLE, list[0].id);
           }
-          return list;
-        } else {
-          // Usuário logado mas sem veículos no banco
-          await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify([]));
-          return [];
         }
+        return list;
       } catch (error) {
         console.warn('Erro ao buscar veículos do Firestore, usando cache local:', error);
       }
@@ -359,6 +391,8 @@ export const StorageService = {
 
   async saveVehicle(vehicle: Vehicle): Promise<void> {
     const userEmail = auth.currentUser?.email;
+    let savedOnline = false;
+
     if (userEmail) {
       try {
         const isCar = vehicle.vehicleType !== 'moto';
@@ -417,12 +451,20 @@ export const StorageService = {
           const docRef = await addDoc(collection(db, 'users', userEmail, 'veiculos'), docData);
           vehicle.id = docRef.id;
         }
+        savedOnline = true;
+        await SyncService.removeByEntityId(vehicle.id);
       } catch (err) {
-        console.error('Erro ao salvar veículo no Firestore:', err);
+        console.warn('Offline: Falha ao salvar veículo no Firestore, salvando local e enfileirando:', err);
       }
     }
 
-    const vehicles = await this.getVehicles();
+    // Se estiver conectado mas falhou por rede, enfileira para sincronização
+    if (userEmail && !savedOnline) {
+      await SyncService.enqueue('SAVE_VEHICLE', vehicle.id, vehicle);
+    }
+
+    const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+    const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
     const index = vehicles.findIndex((v) => v.id === vehicle.id);
     if (index >= 0) {
       vehicles[index] = vehicle;
@@ -434,19 +476,29 @@ export const StorageService = {
 
   async deleteVehicle(vehicleId: string): Promise<void> {
     const userEmail = auth.currentUser?.email;
+    let deletedOnline = false;
+
     if (userEmail && !vehicleId.startsWith('veh-')) {
       try {
         await deleteDoc(doc(db, 'users', userEmail, 'veiculos', vehicleId));
+        deletedOnline = true;
+        await SyncService.removeByEntityId(vehicleId);
       } catch (err) {
-        console.error('Erro ao excluir veículo do Firestore:', err);
+        console.warn('Offline: Falha ao excluir veículo do Firestore, enfileirando:', err);
       }
     }
 
-    const vehicles = (await this.getVehicles()).filter((v) => v.id !== vehicleId);
-    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(vehicles));
+    if (userEmail && !deletedOnline) {
+      await SyncService.enqueue('DELETE_VEHICLE', vehicleId, { id: vehicleId });
+    }
+
+    const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+    const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
+    const remaining = vehicles.filter((v) => v.id !== vehicleId);
+    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(remaining));
     const active = await this.getActiveVehicleId();
-    if (active === vehicleId && vehicles.length > 0) {
-      await this.setActiveVehicleId(vehicles[0].id);
+    if (active === vehicleId && remaining.length > 0) {
+      await this.setActiveVehicleId(remaining[0].id);
     }
   },
 
@@ -603,11 +655,40 @@ export const StorageService = {
           const subSnap = await getDocs(
             collection(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos')
           );
-          const list: Refueling[] = subSnap.docs.map((d) =>
+          let list: Refueling[] = subSnap.docs.map((d) =>
             mapFirestoreDocToRefueling(d.id, { ...d.data(), idVeiculo: vehicleId })
           );
+
+          // PRESERVAÇÃO DE DADOS OFFLINE:
+          try {
+            const queue = await SyncService.getQueue();
+            const userKey = userEmail.toLowerCase().trim();
+            const pendingAdds = queue
+              .filter(
+                (q) =>
+                  q.action === 'ADD_REFUELING' &&
+                  q.userEmail === userKey &&
+                  (q.payload.vehicleId === vehicleId || q.entityId === vehicleId)
+              )
+              .map((q) => q.payload as Refueling);
+            const pendingDeletes = new Set(
+              queue
+                .filter((q) => q.action === 'DELETE_REFUELING' && q.userEmail === userKey)
+                .map((q) => q.entityId)
+            );
+
+            list = list.filter((r) => !pendingDeletes.has(r.id));
+            for (const pa of pendingAdds) {
+              if (!list.some((r) => r.id === pa.id)) {
+                list.unshift(pa);
+              }
+            }
+          } catch (errQ) {
+            console.warn('Erro ao mesclar abastecimentos da fila de pendências:', errQ);
+          }
+
           await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS + '_' + vehicleId, JSON.stringify(list));
-          return list.sort((a, b) => b.odometer - a.odometer);
+          return list.sort(compareDatesDesc);
         } else {
           // Busca agregada de todos os veículos
           const vehicles = await this.getVehicles();
@@ -621,8 +702,32 @@ export const StorageService = {
             );
             allList = allList.concat(vList);
           }
+
+          // PRESERVAÇÃO DE DADOS OFFLINE:
+          try {
+            const queue = await SyncService.getQueue();
+            const userKey = userEmail.toLowerCase().trim();
+            const pendingAdds = queue
+              .filter((q) => q.action === 'ADD_REFUELING' && q.userEmail === userKey)
+              .map((q) => q.payload as Refueling);
+            const pendingDeletes = new Set(
+              queue
+                .filter((q) => q.action === 'DELETE_REFUELING' && q.userEmail === userKey)
+                .map((q) => q.entityId)
+            );
+
+            allList = allList.filter((r) => !pendingDeletes.has(r.id));
+            for (const pa of pendingAdds) {
+              if (!allList.some((r) => r.id === pa.id)) {
+                allList.unshift(pa);
+              }
+            }
+          } catch (errQ) {
+            console.warn('Erro ao mesclar abastecimentos agregados da fila:', errQ);
+          }
+
           await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS, JSON.stringify(allList));
-          return allList.sort((a, b) => b.odometer - a.odometer);
+          return allList.sort(compareDatesDesc);
         }
       } catch (error) {
         console.warn('Erro ao buscar abastecimentos do Firestore, usando cache local:', error);
@@ -632,16 +737,19 @@ export const StorageService = {
     try {
       if (vehicleId) {
         const cached = await AsyncStorage.getItem(STORAGE_KEYS.REFUELINGS + '_' + vehicleId);
-        if (cached) return JSON.parse(cached);
+        if (cached) {
+          const parsed: Refueling[] = JSON.parse(cached);
+          return parsed.sort(compareDatesDesc);
+        }
       }
       const json = await AsyncStorage.getItem(STORAGE_KEYS.REFUELINGS);
       const all: Refueling[] = json ? JSON.parse(json) : [];
       if (vehicleId) {
         return all
           .filter((r) => r.vehicleId === vehicleId)
-          .sort((a, b) => b.odometer - a.odometer);
+          .sort(compareDatesDesc);
       }
-      return all.sort((a, b) => b.odometer - a.odometer);
+      return all.sort(compareDatesDesc);
     } catch {
       return [];
     }
@@ -654,7 +762,9 @@ export const StorageService = {
 
     // Obter o abastecimento anterior para calcular odômetro antigo e consumo
     const existingRefuelings = await this.getRefuelings(refueling.vehicleId);
-    const prev = existingRefuelings.find((r) => r.odometer < refueling.odometer);
+    const prev = existingRefuelings
+      .filter((r) => r.odometer < refueling.odometer)
+      .sort((a, b) => b.odometer - a.odometer)[0];
     const kmAntigo = prev ? prev.odometer : (vehicle ? vehicle.currentOdometer : refueling.odometer);
 
     let distanceTraveled: number | undefined;
@@ -671,12 +781,15 @@ export const StorageService = {
 
     const calculatedRefueling: Refueling = {
       ...refueling,
+      id: refueling.id || `ref-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       plate: vehicle?.plate,
       previousOdometer: kmAntigo,
       distanceTraveled,
       consumptionKmPerLiter,
       costPerKm,
     };
+
+    let savedOnline = false;
 
     if (userEmail && refueling.vehicleId) {
       try {
@@ -731,6 +844,8 @@ export const StorageService = {
         }
 
         await batch.commit();
+        savedOnline = true;
+        await SyncService.removeByEntityId(calculatedRefueling.id);
 
         // Atualiza os totalizadores agregados do veículo
         await this.recalculateVehicleStats(userEmail, refueling.vehicleId);
@@ -738,8 +853,12 @@ export const StorageService = {
         // Atualiza o documento de preços de combustível mais recentes praticados
         await this.saveLatestFuelPrice(refueling.fuelType, refueling.pricePerLiter);
       } catch (err) {
-        console.error('Erro ao salvar abastecimento hierárquico no Firestore:', err);
+        console.warn('Offline: Falha ao salvar abastecimento no Firestore, enfileirando:', err);
       }
+    }
+
+    if (userEmail && !savedOnline) {
+      await SyncService.enqueue('ADD_REFUELING', calculatedRefueling.id, calculatedRefueling);
     }
 
     // Atualizar cache local
@@ -771,12 +890,16 @@ export const StorageService = {
     const all = await this.getRefuelings();
     const itemToDelete = all.find((r) => r.id === id);
     const effectiveVehId = vehicleId || itemToDelete?.vehicleId;
+    let deletedOnline = false;
 
     if (userEmail && effectiveVehId && !id.startsWith('ref-')) {
       try {
         await deleteDoc(
           doc(db, 'users', userEmail, 'veiculos', effectiveVehId, 'abastecimentos', id)
         );
+        deletedOnline = true;
+        await SyncService.removeByEntityId(id);
+
         // Deleta também do legado se ainda existia
         try {
           await deleteDoc(doc(db, 'users', userEmail, 'medias', id));
@@ -784,8 +907,12 @@ export const StorageService = {
 
         await this.recalculateVehicleStats(userEmail, effectiveVehId);
       } catch (err) {
-        console.error('Erro ao excluir abastecimento hierárquico do Firestore:', err);
+        console.warn('Offline: Falha ao excluir abastecimento do Firestore, enfileirando:', err);
       }
+    }
+
+    if (userEmail && !deletedOnline && effectiveVehId) {
+      await SyncService.enqueue('DELETE_REFUELING', id, { id, vehicleId: effectiveVehId });
     }
 
     if (effectiveVehId) {
@@ -802,9 +929,33 @@ export const StorageService = {
     if (userEmail) {
       try {
         const snap = await getDocs(collection(db, 'users', userEmail, 'manutencoes'));
-        const list: MaintenanceItem[] = snap.docs.map((d) =>
+        let list: MaintenanceItem[] = snap.docs.map((d) =>
           mapFirestoreDocToMaintenance(d.id, d.data())
         );
+
+        // PRESERVAÇÃO DE DADOS OFFLINE:
+        try {
+          const queue = await SyncService.getQueue();
+          const userKey = userEmail.toLowerCase().trim();
+          const pendingAdds = queue
+            .filter((q) => q.action === 'ADD_MAINTENANCE' && q.userEmail === userKey)
+            .map((q) => q.payload as MaintenanceItem);
+          const pendingDeletes = new Set(
+            queue
+              .filter((q) => q.action === 'DELETE_MAINTENANCE' && q.userEmail === userKey)
+              .map((q) => q.entityId)
+          );
+
+          list = list.filter((m) => !pendingDeletes.has(m.id));
+          for (const pa of pendingAdds) {
+            if (!list.some((m) => m.id === pa.id)) {
+              list.unshift(pa);
+            }
+          }
+        } catch (errQ) {
+          console.warn('Erro ao mesclar manutenções da fila de pendências:', errQ);
+        }
+
         await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(list));
         if (vehicleId) {
           return list
@@ -836,7 +987,12 @@ export const StorageService = {
     const vehicles = await this.getVehicles();
     const vehicle = vehicles.find((v) => v.id === maintenance.vehicleId);
 
-    const calculatedMnt: MaintenanceItem = { ...maintenance };
+    const calculatedMnt: MaintenanceItem = {
+      ...maintenance,
+      id: maintenance.id || `mnt-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+    };
+
+    let savedOnline = false;
 
     if (userEmail) {
       try {
@@ -871,6 +1027,8 @@ export const StorageService = {
 
         const docRef = await addDoc(collection(db, 'users', userEmail, 'manutencoes'), firestoreData);
         calculatedMnt.id = docRef.id;
+        savedOnline = true;
+        await SyncService.removeByEntityId(calculatedMnt.id);
 
         // Atualizações automáticas no documento do veículo
         if (vehicle) {
@@ -923,8 +1081,12 @@ export const StorageService = {
           await this.saveVehicle(vehicle);
         }
       } catch (err) {
-        console.error('Erro ao salvar manutenção no Firestore:', err);
+        console.warn('Offline: Falha ao salvar manutenção no Firestore, enfileirando:', err);
       }
+    }
+
+    if (userEmail && !savedOnline) {
+      await SyncService.enqueue('ADD_MAINTENANCE', calculatedMnt.id, calculatedMnt);
     }
 
     const all = await this.getMaintenances();
@@ -938,13 +1100,22 @@ export const StorageService = {
 
   async deleteMaintenance(id: string): Promise<void> {
     const userEmail = auth.currentUser?.email;
+    let deletedOnline = false;
+
     if (userEmail && !id.startsWith('mnt-')) {
       try {
         await deleteDoc(doc(db, 'users', userEmail, 'manutencoes', id));
+        deletedOnline = true;
+        await SyncService.removeByEntityId(id);
       } catch (err) {
-        console.error('Erro ao excluir manutenção do Firestore:', err);
+        console.warn('Offline: Falha ao excluir manutenção do Firestore, enfileirando:', err);
       }
     }
+
+    if (userEmail && !deletedOnline) {
+      await SyncService.enqueue('DELETE_MAINTENANCE', id, { id });
+    }
+
     const all = (await this.getMaintenances()).filter((m) => m.id !== id);
     await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(all));
   },
@@ -1026,6 +1197,7 @@ export const StorageService = {
       }
     }
 
+    let savedOnline = false;
     if (userEmail && !vehicle.id.startsWith('veh-')) {
       try {
         await setDoc(
@@ -1033,9 +1205,17 @@ export const StorageService = {
           firestoreUpdates,
           { merge: true }
         );
+        savedOnline = true;
       } catch (err) {
-        console.error('Erro ao salvar periodicidade de manutenção no Firestore:', err);
+        console.warn('Offline: Falha ao salvar periodicidade de manutenção no Firestore, enfileirando:', err);
       }
+    }
+
+    if (userEmail && !savedOnline) {
+      await SyncService.enqueue('SAVE_PERIODIC_CONFIG', vehicle.id, {
+        vehicleId: vehicle.id,
+        config: firestoreUpdates,
+      });
     }
 
     await this.saveVehicle(vehicle);
@@ -1132,6 +1312,7 @@ export const StorageService = {
       updatedAt: new Date().toISOString(),
     };
 
+    let savedOnline = false;
     const userEmail = auth.currentUser?.email;
     if (userEmail) {
       try {
@@ -1147,9 +1328,14 @@ export const StorageService = {
           },
           { merge: true }
         );
+        savedOnline = true;
       } catch (err) {
-        console.warn('Erro ao salvar precosCombustivel no Firestore:', err);
+        console.warn('Offline: Falha ao salvar precosCombustivel no Firestore, enfileirando:', err);
       }
+    }
+
+    if (userEmail && !savedOnline) {
+      await SyncService.enqueue('SAVE_FUEL_PRICES', 'fuelPrices', { prices: updated });
     }
 
     await AsyncStorage.setItem(STORAGE_KEYS.FUEL_PRICES, JSON.stringify(updated));
@@ -1166,6 +1352,100 @@ export const StorageService = {
     const field = fuelFieldMap[fuelType];
     if (field) {
       await this.saveFuelPrices({ [field]: price });
+    }
+  },
+
+  /**
+   * Exclui definitivamente todos os dados do usuário no Firestore, Firebase Storage e armazenamento local.
+   */
+  async deleteAllUserData(userEmail: string): Promise<void> {
+    const emailKey = userEmail.toLowerCase().trim();
+
+    // 1. Exclui veículos e suas subcoleções de abastecimentos no Firestore
+    try {
+      const vehSnap = await getDocs(collection(db, 'users', emailKey, 'veiculos'));
+      for (const vehDoc of vehSnap.docs) {
+        try {
+          const abastSnap = await getDocs(
+            collection(db, 'users', emailKey, 'veiculos', vehDoc.id, 'abastecimentos')
+          );
+          const deleteAbastPromises = abastSnap.docs.map((aDoc) => deleteDoc(aDoc.ref));
+          await Promise.all(deleteAbastPromises);
+        } catch (e) {
+          console.warn('Erro ao excluir subcoleção de abastecimentos:', e);
+        }
+        await deleteDoc(vehDoc.ref);
+      }
+    } catch (e) {
+      console.warn('Erro ao excluir veículos do Firestore:', e);
+    }
+
+    // 2. Exclui manutenções do Firestore
+    try {
+      const maintSnap = await getDocs(collection(db, 'users', emailKey, 'manutencoes'));
+      const deleteMaintPromises = maintSnap.docs.map((mDoc) => deleteDoc(mDoc.ref));
+      await Promise.all(deleteMaintPromises);
+    } catch (e) {
+      console.warn('Erro ao excluir manutenções do Firestore:', e);
+    }
+
+    // 3. Exclui médias legadas do Firestore (se houver)
+    try {
+      const mediaSnap = await getDocs(collection(db, 'users', emailKey, 'medias'));
+      const deleteMediaPromises = mediaSnap.docs.map((mDoc) => deleteDoc(mDoc.ref));
+      await Promise.all(deleteMediaPromises);
+    } catch (e) {
+      console.warn('Erro ao excluir médias legadas:', e);
+    }
+
+    // 4. Exclui configurações do usuário no Firestore
+    try {
+      const configSnap = await getDocs(collection(db, 'users', emailKey, 'configuracoes'));
+      const deleteConfigPromises = configSnap.docs.map((cDoc) => deleteDoc(cDoc.ref));
+      await Promise.all(deleteConfigPromises);
+    } catch (e) {
+      console.warn('Erro ao excluir configurações do Firestore:', e);
+    }
+
+    // 5. Exclui o documento raiz do usuário no Firestore
+    try {
+      await deleteDoc(doc(db, 'users', emailKey));
+    } catch (e) {
+      console.warn('Erro ao excluir documento raiz do usuário no Firestore:', e);
+    }
+
+    // 6. Exclui foto de perfil do Firebase Storage se existir
+    try {
+      const avatarStorageRef = storageRef(storage, `users/${emailKey}/avatar.jpg`);
+      await deleteObject(avatarStorageRef);
+    } catch {
+      // Ignora se não existir arquivo no Storage
+    }
+
+    // 7. Limpa a fila de sincronização offline
+    try {
+      await SyncService.clearQueue();
+    } catch (e) {
+      console.warn('Erro ao limpar fila de sincronização:', e);
+    }
+
+    // 8. Limpa todos os dados locais do AsyncStorage
+    try {
+      const allKeys = await AsyncStorage.getAllKeys();
+      const contagiroKeys = allKeys.filter((k) => k.startsWith('@contagiro:'));
+      if (contagiroKeys.length > 0) {
+        await AsyncStorage.multiRemove(contagiroKeys);
+      }
+    } catch (e) {
+      console.warn('Erro ao limpar AsyncStorage:', e);
+    }
+
+    // 9. Limpa cache de imagens em disco e memória
+    try {
+      await ExpoImage.clearMemoryCache();
+      await ExpoImage.clearDiskCache();
+    } catch (e) {
+      console.warn('Erro ao limpar cache de imagens:', e);
     }
   },
 

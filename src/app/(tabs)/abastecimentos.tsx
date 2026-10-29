@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import {
   StyleSheet,
   View,
@@ -22,6 +22,7 @@ import { useFocusEffect } from 'expo-router';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { StorageService } from '@/services/storage';
 import { Vehicle, Refueling, FuelType } from '@/types/vehicle';
+import { formatDateToBR, compareDatesDesc } from '@/utils/date';
 
 export default function RefuelingsScreen() {
   const colorScheme = useColorScheme();
@@ -353,6 +354,11 @@ export default function RefuelingsScreen() {
       ? vehicle.acceptedFuelTypes
       : ['gasolina', 'etanol'];
 
+  // Registros em ordem decrescente (do mais recente para o mais antigo)
+  const sortedRefuelings = useMemo(() => {
+    return [...refuelings].sort(compareDatesDesc);
+  }, [refuelings]);
+
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
       <View style={[styles.container, { backgroundColor: theme.bg }]}>
@@ -628,7 +634,7 @@ export default function RefuelingsScreen() {
         ) : (
           /* LISTA DE ABASTECIMENTOS */
           <FlatList
-            data={refuelings}
+            data={sortedRefuelings}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
@@ -676,7 +682,7 @@ export default function RefuelingsScreen() {
                       </View>
                     )}
 
-                    <Text style={[styles.dateText, { color: theme.textMuted }]}>{item.date}</Text>
+                    <Text style={[styles.dateText, { color: theme.textMuted }]}>{formatDateToBR(item.date)}</Text>
 
                     {item.isFullTank && (
                       <View style={styles.fullTankBadge}>

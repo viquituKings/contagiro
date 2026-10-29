@@ -1,29 +1,30 @@
-import React, { useState, useCallback } from 'react';
+import { useAppTheme } from '@/context/theme-context';
+import { Calculations } from '@/services/calculations';
+import { StorageService } from '@/services/storage';
+import { SyncService } from '@/services/sync-service';
+import { MaintenanceItem, Refueling, Vehicle } from '@/types/vehicle';
+import { formatDateToBR } from '@/utils/date';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import {
-  StyleSheet,
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  useColorScheme,
-  RefreshControl,
-  Modal,
-  TextInput,
-  Alert,
   ActivityIndicator,
+  Alert,
   Image,
+  Modal,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useFocusEffect } from 'expo-router';
-import { StorageService } from '@/services/storage';
-import { Calculations } from '@/services/calculations';
-import { Vehicle, Refueling, MaintenanceItem } from '@/types/vehicle';
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const { isDark } = useAppTheme();
 
   const [vehicle, setVehicle] = useState<Vehicle | null>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -32,6 +33,51 @@ export default function DashboardScreen() {
   const [maintenances, setMaintenances] = useState<MaintenanceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Sincronização e Fila Offline
+  const [pendingCount, setPendingCount] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimeoutRef = React.useRef<any>(null);
+
+  const showToast = (msg: string) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastMessage(msg);
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage(null);
+    }, 3500);
+  };
+
+  React.useEffect(() => {
+    const unsub = SyncService.subscribe((count) => {
+      setPendingCount(count);
+    });
+    return () => {
+      unsub();
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    };
+  }, []);
+
+  const handleForceSync = async () => {
+    if (isSyncing || pendingCount === 0) return;
+    setIsSyncing(true);
+    try {
+      const result = await SyncService.syncNow();
+      if (result.syncedCount > 0) {
+        showToast('Dados enviados ao banco de dados com sucesso!');
+        await loadData();
+      } else if (result.errors.length > 0) {
+        Alert.alert(
+          'Aviso de Sincronização',
+          'Não foi possível enviar todos os dados. Verifique sua conexão com a internet.'
+        );
+      }
+    } catch {
+      Alert.alert('Erro', 'Ocorreu um erro ao sincronizar com o banco de dados.');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   // Modal para atualizar odômetro rápido
   const [odometerModalVisible, setOdometerModalVisible] = useState(false);
@@ -166,15 +212,25 @@ export default function DashboardScreen() {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+      {/* TOAST DE NOTIFICAÇÃO DA SINCRONIZAÇÃO */}
+      {toastMessage && (
+        <View style={styles.toastContainer} pointerEvents="none">
+          <View style={[styles.toastCard, { backgroundColor: '#059669' }]}>
+            <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+            <Text style={styles.toastText}>{toastMessage}</Text>
+          </View>
+        </View>
+      )}
+
       {/* TOPO FIXO: CABEÇALHO SUPERIOR & SELETOR DE VEÍCULOS */}
       <View style={[styles.fixedHeaderArea, { backgroundColor: theme.bg }]}>
         {/* HEADER SUPERIOR */}
         <View style={styles.header}>
-          <View>
+          <View style={{ flex: 1, marginRight: 6 }}>
             <Text style={[styles.brandTitle, { color: theme.accent }]}>ContaGiro</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
               <Text style={[styles.brandSubtitle, { color: theme.textMuted }]}>
-                Controle Inteligente & Previsão
+                Controle Inteligente
               </Text>
               {loading && (
                 <View
@@ -194,13 +250,57 @@ export default function DashboardScreen() {
               )}
             </View>
           </View>
-          <TouchableOpacity
-            style={[styles.garageBtn, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
-            onPress={() => router.push('/garagem')}
-          >
-            <Ionicons name="car-sport" size={18} color={theme.accent} />
-            <Text style={[styles.garageBtnText, { color: theme.text }]}>Garagem</Text>
-          </TouchableOpacity>
+
+          <View style={styles.headerActionsRow}>
+            {/* AVISO / BOTÃO DE SINCRONIZAÇÃO (AO LADO ESQUERDO DO BOTÃO GARAGEM) */}
+            {pendingCount > 0 ? (
+              <TouchableOpacity
+                style={[
+                  styles.syncNoticeBtn,
+                  {
+                    backgroundColor: isDark ? 'rgba(245, 158, 11, 0.18)' : '#FEF3C7',
+                    borderColor: '#F59E0B',
+                  },
+                ]}
+                onPress={handleForceSync}
+                disabled={isSyncing}
+                activeOpacity={0.7}
+              >
+                {isSyncing ? (
+                  <ActivityIndicator size="small" color="#D97706" />
+                ) : (
+                  <Ionicons name="cloud-upload" size={15} color="#D97706" />
+                )}
+                <Text style={[styles.syncNoticeText, { color: isDark ? '#FBBF24' : '#B45309' }]}>
+                  {isSyncing ? 'Enviando...' : `Sincronizar (${pendingCount})`}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <View
+                style={[
+                  styles.syncNoticeBadge,
+                  {
+                    backgroundColor: isDark ? 'rgba(16, 185, 129, 0.12)' : '#ECFDF5',
+                    borderColor: isDark ? 'rgba(16, 185, 129, 0.3)' : '#A7F3D0',
+                  },
+                ]}
+              >
+                <Ionicons name="cloud-done" size={14} color="#10B981" />
+                <Text style={[styles.syncNoticeText, { color: isDark ? '#34D399' : '#059669' }]}>
+                  Sincronizado
+                </Text>
+              </View>
+            )}
+
+            {/* BOTÃO GARAGEM */}
+            <TouchableOpacity
+              style={[styles.garageBtn, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+              onPress={() => router.push('/garagem')}
+            >
+              <Ionicons name="car-sport" size={18} color={theme.accent} />
+              <Text style={[styles.garageBtnText, { color: theme.text }]}>Garagem</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* SELETOR COMPACTO DE VEÍCULOS (FIXO NO TOPO) */}
@@ -269,8 +369,8 @@ export default function DashboardScreen() {
                                       ? 'rgba(16, 185, 129, 0.25)'
                                       : 'rgba(16, 185, 129, 0.15)'
                                     : isDark
-                                    ? '#1E293B'
-                                    : '#E2E8F0',
+                                      ? '#1E293B'
+                                      : '#E2E8F0',
                                 },
                               ]}
                             >
@@ -558,8 +658,8 @@ export default function DashboardScreen() {
                           {isVencido
                             ? `Atrasado há ${Math.abs(alert.kmRemaining || 0).toLocaleString('pt-BR')} km!`
                             : isAlerta
-                            ? `Alerta: faltam apenas ${alert.kmRemaining?.toLocaleString('pt-BR')} km`
-                            : `Atenção: faltam ${alert.kmRemaining?.toLocaleString('pt-BR')} km`}
+                              ? `Alerta: faltam apenas ${alert.kmRemaining?.toLocaleString('pt-BR')} km`
+                              : `Atenção: faltam ${alert.kmRemaining?.toLocaleString('pt-BR')} km`}
                         </Text>
                       </View>
                       <Text style={[styles.alertCost, { color: theme.text }]}>
@@ -592,7 +692,7 @@ export default function DashboardScreen() {
                           {lastRefueling.fuelType.toUpperCase()} • {lastRefueling.liters.toFixed(2)} L
                         </Text>
                         <Text style={[styles.historySubtitle, { color: theme.textMuted }]}>
-                          {lastRefueling.date} • {lastRefueling.odometer.toLocaleString('pt-BR')} km
+                          {formatDateToBR(lastRefueling.date)} • {lastRefueling.odometer.toLocaleString('pt-BR')} km
                         </Text>
                       </View>
                     </View>
@@ -711,6 +811,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
+  headerActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  syncNoticeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  syncNoticeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  syncNoticeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
   garageBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -721,6 +848,32 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   garageBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  toastContainer: {
+    position: 'absolute',
+    top: 50,
+    left: 16,
+    right: 16,
+    zIndex: 9999,
+    alignItems: 'center',
+  },
+  toastCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  toastText: {
+    color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
   },

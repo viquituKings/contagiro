@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -36,6 +37,25 @@ export default function RegisterScreen() {
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [avatarLoading, setAvatarLoading] = useState(false);
 
+  // Controle de teclado e foco para evidenciar campos
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [focusedField, setFocusedField] = useState<'name' | 'email' | 'password' | 'confirmPassword' | null>(null);
+
+  const scrollViewRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const nameInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+  const emailInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+  const passwordInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+  const confirmPasswordInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+
+  const cardY = useRef<number>(0);
+  const fieldOffsets = useRef<{ [key: string]: number }>({});
+  const focusedFieldRef = useRef<'name' | 'email' | 'password' | 'confirmPassword' | null>(null);
+
+  useEffect(() => {
+    focusedFieldRef.current = focusedField;
+  }, [focusedField]);
+
   const theme = {
     bg: isDark ? '#090D16' : '#F8FAFC',
     card: isDark ? '#141D2E' : '#FFFFFF',
@@ -45,7 +65,51 @@ export default function RegisterScreen() {
     textMuted: isDark ? '#94A3B8' : '#64748B',
     accent: '#10B981',
     border: isDark ? '#1E293B' : '#E2E8F0',
+    focusBg: isDark ? 'rgba(16, 185, 129, 0.08)' : 'rgba(16, 185, 129, 0.05)',
   };
+
+  const scrollToField = (fieldKey: 'name' | 'email' | 'password' | 'confirmPassword') => {
+    setFocusedField(fieldKey);
+    const y = fieldOffsets.current[fieldKey];
+    const defaultOffset = {
+      name: 90,
+      email: 170,
+      password: 250,
+      confirmPassword: 330,
+    }[fieldKey];
+
+    const targetY = y != null
+      ? Math.max(0, cardY.current + y - 20)
+      : defaultOffset;
+
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: targetY, animated: true });
+    }, 100);
+  };
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardVisible(true);
+        setKeyboardHeight(e.endCoordinates.height);
+        if (focusedFieldRef.current) {
+          scrollToField(focusedFieldRef.current);
+        }
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardVisible(false);
+        setKeyboardHeight(0);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const handleSelectAvatar = async () => {
     const source = await promptImageSource();
@@ -113,14 +177,28 @@ export default function RegisterScreen() {
     }
   };
 
+  const isNameFocused = focusedField === 'name';
+  const isEmailFocused = focusedField === 'email';
+  const isPasswordFocused = focusedField === 'password';
+  const isConfirmPasswordFocused = focusedField === 'confirmPassword';
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.keyboardView}
       >
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          ref={scrollViewRef}
+          contentContainerStyle={[
+            styles.scrollContent,
+            keyboardVisible && styles.scrollContentKeyboardOpen,
+            {
+              paddingBottom: Platform.OS === 'android' && keyboardVisible
+                ? Math.max(keyboardHeight, 260) + 40
+                : 40,
+            },
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -134,17 +212,25 @@ export default function RegisterScreen() {
           </TouchableOpacity>
 
           {/* CABEÇALHO */}
-          <View style={styles.header}>
-            <Text style={[styles.title, { color: theme.text }]}>Crie sua conta</Text>
-            <Text style={[styles.subtitle, { color: theme.textMuted }]}>
-              Comece a controlar o consumo e a saúde do seu veículo
+          <View style={[styles.header, keyboardVisible && styles.headerCompact]}>
+            <Text style={[styles.title, keyboardVisible && styles.titleCompact, { color: theme.text }]}>
+              Crie sua conta
             </Text>
+            {!keyboardVisible && (
+              <Text style={[styles.subtitle, { color: theme.textMuted }]}>
+                Comece a controlar o consumo e a saúde do seu veículo
+              </Text>
+            )}
           </View>
 
           {/* CARD DE CADASTRO */}
           <View
+            onLayout={(e) => {
+              cardY.current = e.nativeEvent.layout.y;
+            }}
             style={[
               styles.card,
+              keyboardVisible && styles.cardCompact,
               {
                 backgroundColor: theme.card,
                 borderColor: theme.cardBorder,
@@ -152,10 +238,11 @@ export default function RegisterScreen() {
             ]}
           >
             {/* AVATAR DO USUÁRIO */}
-            <View style={styles.avatarPickerContainer}>
+            <View style={[styles.avatarPickerContainer, keyboardVisible && styles.avatarPickerContainerCompact]}>
               <TouchableOpacity
                 style={[
                   styles.avatarCircle,
+                  keyboardVisible && styles.avatarCircleCompact,
                   { backgroundColor: theme.inputBg, borderColor: avatarUri ? theme.accent : theme.border },
                 ]}
                 onPress={handleSelectAvatar}
@@ -165,18 +252,33 @@ export default function RegisterScreen() {
                 {avatarLoading ? (
                   <ActivityIndicator size="small" color={theme.accent} />
                 ) : avatarUri ? (
-                  <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+                  <Image
+                    source={{ uri: avatarUri }}
+                    style={[styles.avatarImage, keyboardVisible && styles.avatarImageCompact]}
+                  />
                 ) : (
-                  <Ionicons name="person" size={42} color={theme.textMuted} />
+                  <Ionicons
+                    name="person"
+                    size={keyboardVisible ? 26 : 42}
+                    color={theme.textMuted}
+                  />
                 )}
-                <View style={[styles.avatarCameraBadge, { backgroundColor: theme.accent }]}>
-                  <Ionicons name="camera" size={15} color="#FFFFFF" />
+                <View
+                  style={[
+                    styles.avatarCameraBadge,
+                    keyboardVisible && styles.avatarCameraBadgeCompact,
+                    { backgroundColor: theme.accent },
+                  ]}
+                >
+                  <Ionicons name="camera" size={keyboardVisible ? 11 : 15} color="#FFFFFF" />
                 </View>
               </TouchableOpacity>
-              <Text style={[styles.avatarHint, { color: theme.textMuted }]}>
-                {avatarUri ? 'Foto de perfil adicionada (toque para alterar)' : 'Toque para adicionar foto de perfil'}
-              </Text>
-              {avatarUri && (
+              {!keyboardVisible && (
+                <Text style={[styles.avatarHint, { color: theme.textMuted }]}>
+                  {avatarUri ? 'Foto de perfil adicionada (toque para alterar)' : 'Toque para adicionar foto de perfil'}
+                </Text>
+              )}
+              {avatarUri && !keyboardVisible && (
                 <TouchableOpacity onPress={() => setAvatarUri(null)} style={{ marginTop: 4 }}>
                   <Text style={styles.removePhotoText}>Remover foto</Text>
                 </TouchableOpacity>
@@ -184,37 +286,75 @@ export default function RegisterScreen() {
             </View>
 
             {/* NOME COMPLETO */}
-            <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Nome Completo</Text>
+            <View
+              style={styles.inputGroup}
+              onLayout={(e) => {
+                fieldOffsets.current['name'] = e.nativeEvent.layout.y;
+              }}
+            >
+              <Text style={[styles.inputLabel, { color: isNameFocused ? theme.accent : theme.textMuted }]}>
+                Nome Completo
+              </Text>
               <View
                 style={[
                   styles.inputWrapper,
-                  { backgroundColor: theme.inputBg, borderColor: theme.border },
+                  {
+                    backgroundColor: isNameFocused ? theme.focusBg : theme.inputBg,
+                    borderColor: isNameFocused ? theme.accent : theme.border,
+                    borderWidth: isNameFocused ? 1.5 : 1,
+                  },
                 ]}
               >
-                <Ionicons name="person-outline" size={20} color={theme.textMuted} style={styles.inputIcon} />
+                <Ionicons
+                  name="person-outline"
+                  size={20}
+                  color={isNameFocused ? theme.accent : theme.textMuted}
+                  style={styles.inputIcon}
+                />
                 <TextInput
+                  ref={nameInputRef}
                   style={[styles.input, { color: theme.text }]}
                   placeholder="Ex: João da Silva"
                   placeholderTextColor={theme.textMuted}
                   value={name}
                   onChangeText={setName}
                   autoCapitalize="words"
+                  returnKeyType="next"
+                  onFocus={() => scrollToField('name')}
+                  onBlur={() => setFocusedField(null)}
+                  onSubmitEditing={() => emailInputRef.current?.focus()}
                 />
               </View>
             </View>
 
             {/* E-MAIL */}
-            <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: theme.textMuted }]}>E-mail</Text>
+            <View
+              style={styles.inputGroup}
+              onLayout={(e) => {
+                fieldOffsets.current['email'] = e.nativeEvent.layout.y;
+              }}
+            >
+              <Text style={[styles.inputLabel, { color: isEmailFocused ? theme.accent : theme.textMuted }]}>
+                E-mail
+              </Text>
               <View
                 style={[
                   styles.inputWrapper,
-                  { backgroundColor: theme.inputBg, borderColor: theme.border },
+                  {
+                    backgroundColor: isEmailFocused ? theme.focusBg : theme.inputBg,
+                    borderColor: isEmailFocused ? theme.accent : theme.border,
+                    borderWidth: isEmailFocused ? 1.5 : 1,
+                  },
                 ]}
               >
-                <Ionicons name="mail-outline" size={20} color={theme.textMuted} style={styles.inputIcon} />
+                <Ionicons
+                  name="mail-outline"
+                  size={20}
+                  color={isEmailFocused ? theme.accent : theme.textMuted}
+                  style={styles.inputIcon}
+                />
                 <TextInput
+                  ref={emailInputRef}
                   style={[styles.input, { color: theme.text }]}
                   placeholder="seu@email.com"
                   placeholderTextColor={theme.textMuted}
@@ -223,21 +363,42 @@ export default function RegisterScreen() {
                   autoCapitalize="none"
                   keyboardType="email-address"
                   autoCorrect={false}
+                  returnKeyType="next"
+                  onFocus={() => scrollToField('email')}
+                  onBlur={() => setFocusedField(null)}
+                  onSubmitEditing={() => passwordInputRef.current?.focus()}
                 />
               </View>
             </View>
 
             {/* SENHA */}
-            <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Senha (mínimo 6 dígitos)</Text>
+            <View
+              style={styles.inputGroup}
+              onLayout={(e) => {
+                fieldOffsets.current['password'] = e.nativeEvent.layout.y;
+              }}
+            >
+              <Text style={[styles.inputLabel, { color: isPasswordFocused ? theme.accent : theme.textMuted }]}>
+                Senha (mínimo 6 dígitos)
+              </Text>
               <View
                 style={[
                   styles.inputWrapper,
-                  { backgroundColor: theme.inputBg, borderColor: theme.border },
+                  {
+                    backgroundColor: isPasswordFocused ? theme.focusBg : theme.inputBg,
+                    borderColor: isPasswordFocused ? theme.accent : theme.border,
+                    borderWidth: isPasswordFocused ? 1.5 : 1,
+                  },
                 ]}
               >
-                <Ionicons name="lock-closed-outline" size={20} color={theme.textMuted} style={styles.inputIcon} />
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={20}
+                  color={isPasswordFocused ? theme.accent : theme.textMuted}
+                  style={styles.inputIcon}
+                />
                 <TextInput
+                  ref={passwordInputRef}
                   style={[styles.input, { color: theme.text }]}
                   placeholder="Crie uma senha forte"
                   placeholderTextColor={theme.textMuted}
@@ -245,6 +406,10 @@ export default function RegisterScreen() {
                   onChangeText={setPassword}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
+                  returnKeyType="next"
+                  onFocus={() => scrollToField('password')}
+                  onBlur={() => setFocusedField(null)}
+                  onSubmitEditing={() => confirmPasswordInputRef.current?.focus()}
                 />
                 <TouchableOpacity
                   onPress={() => setShowPassword(!showPassword)}
@@ -253,23 +418,40 @@ export default function RegisterScreen() {
                   <Ionicons
                     name={showPassword ? 'eye-off-outline' : 'eye-outline'}
                     size={20}
-                    color={theme.textMuted}
+                    color={isPasswordFocused ? theme.accent : theme.textMuted}
                   />
                 </TouchableOpacity>
               </View>
             </View>
 
             {/* CONFIRMAÇÃO DE SENHA */}
-            <View style={styles.inputGroup}>
-              <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Confirmar Senha</Text>
+            <View
+              style={styles.inputGroup}
+              onLayout={(e) => {
+                fieldOffsets.current['confirmPassword'] = e.nativeEvent.layout.y;
+              }}
+            >
+              <Text style={[styles.inputLabel, { color: isConfirmPasswordFocused ? theme.accent : theme.textMuted }]}>
+                Confirmar Senha
+              </Text>
               <View
                 style={[
                   styles.inputWrapper,
-                  { backgroundColor: theme.inputBg, borderColor: theme.border },
+                  {
+                    backgroundColor: isConfirmPasswordFocused ? theme.focusBg : theme.inputBg,
+                    borderColor: isConfirmPasswordFocused ? theme.accent : theme.border,
+                    borderWidth: isConfirmPasswordFocused ? 1.5 : 1,
+                  },
                 ]}
               >
-                <Ionicons name="shield-checkmark-outline" size={20} color={theme.textMuted} style={styles.inputIcon} />
+                <Ionicons
+                  name="shield-checkmark-outline"
+                  size={20}
+                  color={isConfirmPasswordFocused ? theme.accent : theme.textMuted}
+                  style={styles.inputIcon}
+                />
                 <TextInput
+                  ref={confirmPasswordInputRef}
                   style={[styles.input, { color: theme.text }]}
                   placeholder="Repita sua senha"
                   placeholderTextColor={theme.textMuted}
@@ -277,7 +459,21 @@ export default function RegisterScreen() {
                   onChangeText={setConfirmPassword}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
+                  returnKeyType="done"
+                  onFocus={() => scrollToField('confirmPassword')}
+                  onBlur={() => setFocusedField(null)}
+                  onSubmitEditing={handleRegister}
                 />
+                <TouchableOpacity
+                  onPress={() => setShowPassword(!showPassword)}
+                  style={styles.eyeBtn}
+                >
+                  <Ionicons
+                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                    size={20}
+                    color={isConfirmPasswordFocused ? theme.accent : theme.textMuted}
+                  />
+                </TouchableOpacity>
               </View>
             </View>
 
@@ -359,8 +555,12 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 30,
+    paddingTop: 16,
+    paddingBottom: 40,
+    flexGrow: 1,
+  },
+  scrollContentKeyboardOpen: {
+    paddingTop: 8,
   },
   backBtn: {
     flexDirection: 'row',
@@ -368,23 +568,29 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingVertical: 8,
     alignSelf: 'flex-start',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   backBtnText: {
     fontSize: 14,
     fontWeight: '600',
   },
   header: {
-    marginBottom: 24,
+    marginBottom: 20,
+  },
+  headerCompact: {
+    marginBottom: 10,
   },
   title: {
     fontSize: 28,
     fontWeight: '900',
     letterSpacing: -0.5,
   },
+  titleCompact: {
+    fontSize: 22,
+  },
   subtitle: {
     fontSize: 14,
-    marginTop: 6,
+    marginTop: 4,
   },
   card: {
     borderRadius: 24,
@@ -395,6 +601,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 16,
     elevation: 4,
+  },
+  cardCompact: {
+    padding: 18,
+    borderRadius: 20,
   },
   inputGroup: {
     marginBottom: 16,
@@ -439,7 +649,7 @@ const styles = StyleSheet.create({
   dividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 20,
+    marginVertical: 18,
   },
   dividerLine: {
     flex: 1,
@@ -468,7 +678,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: 6,
-    marginTop: 24,
+    marginTop: 20,
   },
   footerText: {
     fontSize: 14,
@@ -479,23 +689,37 @@ const styles = StyleSheet.create({
   },
   avatarPickerContainer: {
     alignItems: 'center',
-    marginBottom: 20,
-    marginTop: 4,
+    marginBottom: 18,
+    marginTop: 2,
+  },
+  avatarPickerContainerCompact: {
+    marginBottom: 10,
+    marginTop: 0,
   },
   avatarCircle: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
     borderWidth: 2,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
     overflow: 'visible',
   },
+  avatarCircleCompact: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+  },
   avatarImage: {
-    width: 86,
-    height: 86,
-    borderRadius: 43,
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+  },
+  avatarImageCompact: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
   },
   avatarCameraBadge: {
     position: 'absolute',
@@ -513,6 +737,13 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3,
+  },
+  avatarCameraBadgeCompact: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    bottom: -2,
+    right: -2,
   },
   avatarHint: {
     fontSize: 12,
