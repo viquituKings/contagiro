@@ -20,6 +20,7 @@ import { StorageService } from '@/services/storage';
 import { useAuth } from '@/context/auth-context';
 import { useAppTheme } from '@/context/theme-context';
 import { Vehicle, FuelType, VehicleType } from '@/types/vehicle';
+import { formatEngineDisplacement, parseEngineDisplacement } from '@/utils/engine';
 import { pickAndOptimizeImage, promptImageSource } from '@/services/image-picker';
 
 export function formatPlate(text: string): string {
@@ -63,6 +64,7 @@ export default function GarageScreen() {
   const [engineDisplacement, setEngineDisplacement] = useState('');
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoLoading, setPhotoLoading] = useState(false);
+  const previewDisplacement = parseEngineDisplacement(engineDisplacement);
 
   const loadData = async (isPull = false) => {
     if (isPull) setRefreshing(true);
@@ -151,7 +153,7 @@ export default function GarageScreen() {
     setYear(veh.year ? String(veh.year) : '');
     setTankCapacity(veh.tankCapacity ? String(veh.tankCapacity) : '50');
     setCurrentOdometer(veh.currentOdometer ? String(veh.currentOdometer) : '0');
-    setEngineDisplacement(veh.engineDisplacement ? String(veh.engineDisplacement) : '');
+    setEngineDisplacement(veh.engineDisplacement ? String(parseEngineDisplacement(veh.engineDisplacement) ?? veh.engineDisplacement) : '');
     setPhotoUrl(veh.photoUrl || null);
     setAcceptedFuels(
       veh.acceptedFuelTypes && veh.acceptedFuelTypes.length > 0
@@ -209,7 +211,7 @@ export default function GarageScreen() {
       const odomNum = parseInt(currentOdometer, 10) || 0;
       const yearNum = parseInt(year, 10) || new Date().getFullYear();
       const tankNum = parseInt(tankCapacity, 10) || (vehicleType === 'moto' ? 14 : 50);
-      const dispNum = engineDisplacement.trim() ? parseInt(engineDisplacement, 10) : undefined;
+      const dispNum = parseEngineDisplacement(engineDisplacement);
 
       if (editingVehicle) {
         // Modo Edição: marca, modelo e placa não podem ser alterados!
@@ -494,7 +496,7 @@ export default function GarageScreen() {
                           </View>
                         </View>
                         <Text style={[styles.carModel, { color: theme.textMuted }]} numberOfLines={1}>
-                          {displayBrandModel} • {item.year} {item.engineDisplacement ? `• ${item.engineDisplacement}cc` : ''}
+                          {displayBrandModel} • {item.year} {item.engineDisplacement ? `• ${formatEngineDisplacement(item.engineDisplacement)}` : ''}
                         </Text>
                       </View>
                     </View>
@@ -958,19 +960,38 @@ export default function GarageScreen() {
                   </View>
                 </View>
 
-                {vehicleType === 'moto' && (
-                  <View style={styles.inputGroup}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Cilindrada (cc):</Text>
-                    <TextInput
-                      style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
-                      keyboardType="numeric"
-                      value={engineDisplacement}
-                      onChangeText={setEngineDisplacement}
-                      placeholder="Ex: 160"
-                      placeholderTextColor={theme.textMuted}
-                    />
+                {/* CILINDRADA / MOTOR (CARROS E MOTOS) */}
+                <View style={styles.inputGroup}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                      Cilindrada / Motor:
+                    </Text>
+                    {previewDisplacement ? (
+                      <View style={[styles.dispPreviewBadge, { backgroundColor: theme.accentLight }]}>
+                        <Text style={[styles.dispPreviewText, { color: theme.accent }]}>
+                          Salvará: {previewDisplacement}cc
+                        </Text>
+                      </View>
+                    ) : null}
                   </View>
-                )}
+                  <TextInput
+                    style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                    keyboardType="decimal-pad"
+                    value={engineDisplacement}
+                    onChangeText={setEngineDisplacement}
+                    placeholder={
+                      vehicleType === 'moto'
+                        ? 'Ex: 160, 250 ou 1000'
+                        : 'Ex: 1.0, 1.6, 1.8 ou 1000, 1600'
+                    }
+                    placeholderTextColor={theme.textMuted}
+                  />
+                  <Text style={[styles.inputHint, { color: theme.textMuted }]}>
+                    {vehicleType === 'moto'
+                      ? 'Aceita cilindradas em cc (ex: 160, 250, 1000).'
+                      : 'Aceita em litros (ex: 1.0, 1.6, 1.8) ou cilindradas (ex: 1000, 1600, 1800).'}
+                  </Text>
+                </View>
 
                 {/* COMBUSTÍVEIS ACEITOS (CHECKBOX) */}
                 <View style={styles.inputGroup}>
@@ -1293,6 +1314,15 @@ const styles = StyleSheet.create({
   inputLabel: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  dispPreviewBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  dispPreviewText: {
+    fontSize: 11,
+    fontWeight: '700',
   },
   inputHint: {
     fontSize: 11,

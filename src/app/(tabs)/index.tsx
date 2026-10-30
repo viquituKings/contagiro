@@ -1,10 +1,12 @@
+import { ConsumptionBarChart, ProportionDonutChart } from '@/components/dashboard-charts';
 import { useAppTheme } from '@/context/theme-context';
 import { Calculations } from '@/services/calculations';
+import { NotificationService } from '@/services/notifications';
 import { StorageService } from '@/services/storage';
 import { SyncService } from '@/services/sync-service';
-import { NotificationService } from '@/services/notifications';
 import { MaintenanceItem, Refueling, Vehicle } from '@/types/vehicle';
 import { formatDateToBR } from '@/utils/date';
+import { formatEngineDisplacement } from '@/utils/engine';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
@@ -97,7 +99,7 @@ export default function DashboardScreen() {
 
   const loadData = async (preserveVehicleId?: string) => {
     try {
-      SyncService.getPendingCount().then(setPendingCount).catch(() => {});
+      SyncService.getPendingCount().then(setPendingCount).catch(() => { });
 
       // 1. Carrega primeiro do cache local do aparelho para exibição instantânea (especialmente offline)
       const [cachedVehicles, activeVehId] = await Promise.all([
@@ -235,7 +237,7 @@ export default function DashboardScreen() {
       setVehicles((prev) => prev.map((v) => (v.id === updated.id ? updated : v)));
       setOdometerModalVisible(false);
       await loadData(updated.id);
-      NotificationService.syncMaintenanceNotifications().catch(() => {});
+      NotificationService.syncMaintenanceNotifications().catch(() => { });
     } catch (err) {
       console.error('Erro ao atualizar odômetro:', err);
       Alert.alert('Erro', 'Não foi possível atualizar o odômetro. Tente novamente.');
@@ -501,8 +503,8 @@ export default function DashboardScreen() {
                                       ? 'rgba(16, 185, 129, 0.25)'
                                       : 'rgba(16, 185, 129, 0.15)'
                                     : isDark
-                                    ? '#1E293B'
-                                    : '#E2E8F0',
+                                      ? '#1E293B'
+                                      : '#E2E8F0',
                                 },
                               ]}
                             >
@@ -630,7 +632,7 @@ export default function DashboardScreen() {
                   {vehicle.name}
                 </Text>
                 <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]}>
-                  {vehicle.model} • {vehicle.plate}
+                  {vehicle.model} • {vehicle.plate}{vehicle.engineDisplacement ? ` • ${formatEngineDisplacement(vehicle.engineDisplacement)}` : ''}
                 </Text>
               </View>
               <View style={styles.singleVehicleKmBadge}>
@@ -719,22 +721,6 @@ export default function DashboardScreen() {
             {/* ATALHOS RÁPIDOS (ABASTECER, MANUTENÇÃO, CALC FLEX) */}
             <View style={styles.actionRow}>
               <TouchableOpacity
-                style={[styles.actionBtn, { backgroundColor: '#10B981' }]}
-                onPress={() => router.push('/abastecimentos')}
-              >
-                <Ionicons name="water" size={18} color="#FFFFFF" />
-                <Text style={styles.actionBtnText}>+ Abastecer</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.actionBtn, { backgroundColor: '#3B82F6' }]}
-                onPress={() => router.push('/manutencoes')}
-              >
-                <Ionicons name="build" size={18} color="#FFFFFF" />
-                <Text style={styles.actionBtnText}>+ Manutenção</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
                 style={[styles.actionBtn, { backgroundColor: '#8B5CF6' }]}
                 onPress={() => router.push('/previsao')}
               >
@@ -743,46 +729,90 @@ export default function DashboardScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* MÉTRICAS E TOTALIZADORES DO VEÍCULO (DISPONÍVEIS ONLINE E OFFLINE) */}
+            {/* DASHBOARD: MÉTRICAS, TOTALIZADORES E GRÁFICOS (ONLINE E OFFLINE) */}
             {stats && (
               <>
-                <View style={styles.metricsGrid}>
-                  {/* Card Média Consumo */}
-                  <View
-                    style={[
-                      styles.metricCard,
-                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
-                    ]}
-                  >
-                    <View style={styles.metricHeader}>
-                      <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
-                        Média de Consumo
-                      </Text>
+                {/* 1. CARD MÉDIA DE CONSUMO (GRÁFICO DE BARRAS VERTICAIS COMPARATIVO) */}
+                <View
+                  style={[
+                    styles.dashboardCard,
+                    { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                  ]}
+                >
+                  <View style={styles.metricHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                       <View style={[styles.iconCircle, { backgroundColor: theme.accentLight }]}>
                         <Ionicons name="leaf-outline" size={16} color={theme.accent} />
                       </View>
+                      <View>
+                        <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
+                          Média de Consumo
+                        </Text>
+                        <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                          {stats.bestConsumption
+                            ? `Melhor: ${stats.bestConsumption} km/L`
+                            : stats.averageConsumption > 0
+                              ? 'Baseado em tanques cheios'
+                              : 'Aguardando 2º abastecimento'}
+                        </Text>
+                      </View>
                     </View>
-                    <Text style={[styles.metricBigValue, { color: theme.accent }]}>
-                      {stats.averageConsumption} <Text style={styles.metricUnit}>km/L</Text>
-                    </Text>
-                    <Text style={[styles.metricSub, { color: theme.textMuted }]}>
-                      {stats.bestConsumption
-                        ? `Melhor: ${stats.bestConsumption} km/L`
-                        : 'Baseado em tanques cheios'}
+                    <Text
+                      style={[
+                        styles.metricBigValue,
+                        {
+                          color: stats.averageConsumption > 0 ? theme.accent : theme.textMuted,
+                          fontSize: stats.averageConsumption > 0 ? 20 : 16,
+                        },
+                      ]}
+                    >
+                      {stats.averageConsumption > 0 ? (
+                        <>
+                          {stats.averageConsumption} <Text style={styles.metricUnit}>km/L</Text>
+                        </>
+                      ) : (
+                        'Sem média'
+                      )}
                     </Text>
                   </View>
 
-                  {/* Card Custo por KM */}
-                  <View
-                    style={[
-                      styles.metricCard,
-                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
-                    ]}
-                  >
-                    <View style={styles.metricHeader}>
-                      <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
-                        Custo Médio / km
+                  {stats.averageConsumption === 0 && (
+                    <View
+                      style={[
+                        styles.noticeBanner,
+                        {
+                          backgroundColor: isDark ? 'rgba(245, 158, 11, 0.12)' : '#FEF3C7',
+                          borderColor: isDark ? 'rgba(245, 158, 11, 0.25)' : '#FCD34D',
+                        },
+                      ]}
+                    >
+                      <Ionicons name="information-circle-outline" size={16} color="#D97706" />
+                      <Text style={[styles.noticeBannerText, { color: isDark ? '#FCD34D' : '#92400E' }]}>
+                        Por não ter um segundo abastecimento, este veículo ainda não possui média calculada.
                       </Text>
+                    </View>
+                  )}
+
+                  {/* Gráfico de barras verticais: relação do veículo selecionado com os demais */}
+                  <ConsumptionBarChart
+                    vehicles={vehicles}
+                    activeVehicleId={vehicle.id}
+                    activeConsumption={stats.averageConsumption}
+                    bestConsumption={stats.bestConsumption ?? undefined}
+                    theme={theme}
+                    isDark={isDark}
+                  />
+                </View>
+
+                {/* 2. CARD CUSTO MÉDIO / KM (GRÁFICO DE PIZZA / DONUT) */}
+                <View
+                  style={[
+                    styles.dashboardCard,
+                    { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                  ]}
+                >
+                  <View style={styles.metricHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                       <View
                         style={[
                           styles.iconCircle,
@@ -791,68 +821,117 @@ export default function DashboardScreen() {
                       >
                         <Ionicons name="cash-outline" size={16} color={theme.blue} />
                       </View>
+                      <View>
+                        <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
+                          Custo Médio / km
+                        </Text>
+                        <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                          {stats.averageCostPerKm > 0
+                            ? 'Combustível rodado'
+                            : 'Aguardando 2º abastecimento'}
+                        </Text>
+                      </View>
                     </View>
-                    <Text style={[styles.metricBigValue, { color: theme.blue }]}>
-                      R$ {stats.averageCostPerKm.toFixed(2)}{' '}
-                      <Text style={styles.metricUnit}>/km</Text>
-                    </Text>
-                    <Text style={[styles.metricSub, { color: theme.textMuted }]}>
-                      Combustível rodado
+                    <Text
+                      style={[
+                        styles.metricBigValue,
+                        {
+                          color: stats.averageCostPerKm > 0 ? theme.blue : theme.textMuted,
+                          fontSize: stats.averageCostPerKm > 0 ? 20 : 16,
+                        },
+                      ]}
+                    >
+                      {stats.averageCostPerKm > 0 ? (
+                        <>
+                          R$ {stats.averageCostPerKm.toFixed(2)}{' '}
+                          <Text style={styles.metricUnit}>/km</Text>
+                        </>
+                      ) : (
+                        'Sem média'
+                      )}
                     </Text>
                   </View>
+
+                  {/* Gráfico de pizza / donut: fatia do custo médio na frota */}
+                  <ProportionDonutChart
+                    vehicles={vehicles}
+                    activeVehicleId={vehicle.id}
+                    activeValue={stats.averageCostPerKm}
+                    valueType="cost"
+                    activeColor="#3B82F6"
+                    theme={theme}
+                    isDark={isDark}
+                  />
                 </View>
 
-                <View style={styles.metricsGrid}>
-                  {/* Totalizador de Abastecimento */}
-                  <TouchableOpacity
-                    style={[
-                      styles.metricCard,
-                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
-                    ]}
-                    onPress={() => router.push('/abastecimentos')}
-                    activeOpacity={0.75}
-                  >
-                    <View style={styles.metricHeader}>
-                      <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
-                        Total Abastecido
-                      </Text>
+                {/* 3. CARD TOTAL ABASTECIDO */}
+                <TouchableOpacity
+                  style={[
+                    styles.dashboardCard,
+                    { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                  ]}
+                  onPress={() => router.push('/abastecimentos')}
+                  activeOpacity={0.75}
+                >
+                  <View style={styles.metricHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                       <View style={[styles.iconCircle, { backgroundColor: theme.accentLight }]}>
                         <Ionicons name="water-outline" size={16} color={theme.accent} />
+                      </View>
+                      <View>
+                        <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
+                          Total Abastecido
+                        </Text>
+                        <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                          {stats.totalLiters.toFixed(1)} L em {stats.refuelingsCount} abastecimento(s)
+                        </Text>
                       </View>
                     </View>
                     <Text style={[styles.metricBigValue, { color: theme.text }]}>
                       R$ {stats.totalFuelSpent.toFixed(2)}
                     </Text>
-                    <Text style={[styles.metricSub, { color: theme.textMuted }]}>
-                      {stats.totalLiters.toFixed(1)} L em {stats.refuelingsCount} abastecimento(s)
-                    </Text>
-                  </TouchableOpacity>
+                  </View>
+                </TouchableOpacity>
 
-                  {/* Totalizador de Manutenção */}
-                  <TouchableOpacity
-                    style={[
-                      styles.metricCard,
-                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
-                    ]}
-                    onPress={() => router.push('/manutencoes')}
-                    activeOpacity={0.75}
-                  >
-                    <View style={styles.metricHeader}>
-                      <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
-                        Gasto em Manutenção
-                      </Text>
+                {/* 4. CARD GASTO COM MANUTENÇÃO (GRÁFICO DE PIZZA / DONUT) */}
+                <TouchableOpacity
+                  style={[
+                    styles.dashboardCard,
+                    { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                  ]}
+                  onPress={() => router.push('/manutencoes')}
+                  activeOpacity={0.75}
+                >
+                  <View style={styles.metricHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                       <View style={[styles.iconCircle, { backgroundColor: theme.amberLight }]}>
                         <Ionicons name="construct-outline" size={16} color={theme.amber} />
+                      </View>
+                      <View>
+                        <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
+                          Gasto em Manutenção
+                        </Text>
+                        <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                          {stats.maintenancesCount} serviço(s) registrado(s)
+                        </Text>
                       </View>
                     </View>
                     <Text style={[styles.metricBigValue, { color: theme.amber }]}>
                       R$ {stats.totalMaintenanceSpent.toFixed(2)}
                     </Text>
-                    <Text style={[styles.metricSub, { color: theme.textMuted }]}>
-                      {stats.maintenancesCount} serviço(s) registrado(s)
-                    </Text>
-                  </TouchableOpacity>
-                </View>
+                  </View>
+
+                  {/* Gráfico de pizza / donut: fatia do gasto em manutenção na frota */}
+                  <ProportionDonutChart
+                    vehicles={vehicles}
+                    activeVehicleId={vehicle.id}
+                    activeValue={stats.totalMaintenanceSpent}
+                    valueType="maintenance"
+                    activeColor="#F59E0B"
+                    theme={theme}
+                    isDark={isDark}
+                  />
+                </TouchableOpacity>
               </>
             )}
 
@@ -867,13 +946,31 @@ export default function DashboardScreen() {
               >
                 <View style={styles.forecastHeader}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Ionicons name="trending-up" size={20} color="#10B981" />
+                    <Ionicons
+                      name="trending-up"
+                      size={20}
+                      color={forecast.isInactive ? theme.textMuted : '#10B981'}
+                    />
                     <Text style={[styles.forecastTitle, { color: theme.text }]}>
-                      Previsão para 30 Dias
+                      Previsão para 30 Dias (Mês Ant.)
                     </Text>
                   </View>
-                  <View style={styles.tagBadge}>
-                    <Text style={styles.tagBadgeText}>~{forecast.averageDailyKm} km/dia</Text>
+                  <View
+                    style={[
+                      styles.tagBadge,
+                      forecast.isInactive && {
+                        backgroundColor: isDark ? 'rgba(148, 163, 184, 0.15)' : '#E2E8F0',
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.tagBadgeText,
+                        forecast.isInactive && { color: theme.textMuted },
+                      ]}
+                    >
+                      {forecast.isInactive ? 'Inativo (30d)' : `~${forecast.averageDailyKm} km/dia`}
+                    </Text>
                   </View>
                 </View>
                 <View style={styles.forecastRow}>
@@ -881,16 +978,26 @@ export default function DashboardScreen() {
                     <Text style={[styles.forecastLabel, { color: theme.textMuted }]}>
                       Custo Estimado Total:
                     </Text>
-                    <Text style={[styles.forecastAmount, { color: theme.accent }]}>
+                    <Text
+                      style={[
+                        styles.forecastAmount,
+                        { color: forecast.isInactive ? theme.textMuted : theme.accent },
+                      ]}
+                    >
                       R$ {forecast.totalProjectedCost30Days.toFixed(2)}
                     </Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={[styles.forecastLabel, { color: theme.textMuted }]}>
-                      Combustível:
+                      {forecast.isInactive ? 'Status:' : 'Combustível:'}
                     </Text>
-                    <Text style={[styles.forecastSubAmount, { color: theme.text }]}>
-                      R$ {forecast.projected30DaysCost.toFixed(2)}
+                    <Text
+                      style={[
+                        styles.forecastSubAmount,
+                        { color: forecast.isInactive ? theme.textMuted : theme.text },
+                      ]}
+                    >
+                      {forecast.isInactive ? 'Gastos pausados' : `R$ ${forecast.projected30DaysCost.toFixed(2)}`}
                     </Text>
                   </View>
                 </View>
@@ -937,8 +1044,8 @@ export default function DashboardScreen() {
                           {isVencido
                             ? `Atrasado há ${Math.abs(alert.kmRemaining || 0).toLocaleString('pt-BR')} km!`
                             : isAlerta
-                            ? `Alerta: faltam apenas ${alert.kmRemaining?.toLocaleString('pt-BR')} km`
-                            : `Atenção: faltam ${alert.kmRemaining?.toLocaleString('pt-BR')} km`}
+                              ? `Alerta: faltam apenas ${alert.kmRemaining?.toLocaleString('pt-BR')} km`
+                              : `Atenção: faltam ${alert.kmRemaining?.toLocaleString('pt-BR')} km`}
                         </Text>
                       </View>
                       <Text style={[styles.alertCost, { color: theme.text }]}>
@@ -1263,6 +1370,31 @@ const styles = StyleSheet.create({
   odometerCardActionText: {
     fontSize: 12,
     fontWeight: '700',
+  },
+  noticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  noticeBannerText: {
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
+  dashboardCard: {
+    padding: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    gap: 10,
+    shadowColor: '#000',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
   metricsGrid: {
     flexDirection: 'row',

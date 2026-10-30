@@ -50,17 +50,21 @@ export const Calculations = {
           )
         : 0;
 
-    const isMoto = vehicle?.vehicleType === 'moto';
-    const defaultConsumption = isMoto ? 35.0 : 12.0;
+    const refuelingsCount = Math.max(vehicle?.qtdAbastecimentos ?? 0, refuelings.length);
 
-    const averageConsumption =
-      vehicle?.mediaGeralKmPorLitro &&
-      vehicle.mediaGeralKmPorLitro > 0 &&
-      (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
+    // Se o veículo possui apenas o tanque base (1º abastecimento) ou não possui registros com km/L válido,
+    // o veículo NÃO possui média calculada (retorna 0 e hasCalculatedConsumption = false).
+    const hasCalculatedConsumption =
+      listAvgConsumption > 0 ||
+      (Boolean(vehicle?.mediaGeralKmPorLitro && vehicle.mediaGeralKmPorLitro > 0) && refuelingsCount > 1);
+
+    const averageConsumption = hasCalculatedConsumption
+      ? vehicle?.mediaGeralKmPorLitro &&
+        vehicle.mediaGeralKmPorLitro > 0 &&
+        (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
         ? Number(vehicle.mediaGeralKmPorLitro)
-        : listAvgConsumption > 0
-        ? listAvgConsumption
-        : defaultConsumption;
+        : listAvgConsumption
+      : 0;
 
     const bestConsumption = validConsumptions.length > 0 ? Math.max(...validConsumptions) : null;
     const worstConsumption = validConsumptions.length > 0 ? Math.min(...validConsumptions) : null;
@@ -74,14 +78,17 @@ export const Calculations = {
         ? Number((validCostsPerKm.reduce((a, b) => a + b, 0) / validCostsPerKm.length).toFixed(2))
         : 0;
 
-    const averageCostPerKm =
-      vehicle?.custoMedioPorKm &&
-      vehicle.custoMedioPorKm > 0 &&
-      (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
+    const hasCalculatedCostPerKm =
+      listAvgCostPerKm > 0 ||
+      (Boolean(vehicle?.custoMedioPorKm && vehicle.custoMedioPorKm > 0) && refuelingsCount > 1);
+
+    const averageCostPerKm = hasCalculatedCostPerKm
+      ? vehicle?.custoMedioPorKm &&
+        vehicle.custoMedioPorKm > 0 &&
+        (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
         ? Number(vehicle.custoMedioPorKm)
-        : listAvgCostPerKm > 0
-        ? listAvgCostPerKm
-        : 0.48;
+        : listAvgCostPerKm
+      : 0;
 
     return {
       totalSpent,
@@ -92,8 +99,10 @@ export const Calculations = {
       bestConsumption,
       worstConsumption,
       averageCostPerKm,
-      refuelingsCount: Math.max(vehicle?.qtdAbastecimentos ?? 0, refuelings.length),
+      refuelingsCount,
       maintenancesCount: Math.max(vehicle?.qtdManutencoes ?? 0, maintenances.length),
+      hasCalculatedConsumption,
+      hasCalculatedCostPerKm,
     };
   },
 
@@ -299,62 +308,33 @@ export const Calculations = {
     };
   },
 
-  // Motor de Previsão de Gastos Inteligente
+  // Motor de Previsão de Gastos Inteligente (baseado estritamente no mês anterior / últimos 30 dias)
   calculateFuelForecast(
     vehicle: Vehicle,
     refuelings: Refueling[],
     maintenances: MaintenanceItem[],
     latestFuelPrices?: FuelPrices
   ): FuelForecast {
-    const isMoto = vehicle?.vehicleType === 'moto';
-    let averageDailyKm = isMoto ? 25 : 30;
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
 
-    const timeline: { date: Date; odometer: number }[] = [];
-
-    refuelings.forEach((r) => {
-      const d = new Date(r.date);
-      if (!isNaN(d.getTime()) && r.odometer > 0) {
-        timeline.push({ date: d, odometer: r.odometer });
-      }
+    // 1. Filtra registros estritamente dentro do mês anterior (últimos 30 dias)
+    const recentRefuelings = refuelings.filter((r) => {
+      const t = new Date(r.date).getTime();
+      return !isNaN(t) && now - t <= THIRTY_DAYS_MS;
     });
 
-    maintenances.forEach((m) => {
-      const d = new Date(m.date);
-      if (!isNaN(d.getTime()) && m.odometer > 0) {
-        timeline.push({ date: d, odometer: m.odometer });
-      }
+    const recentMaintenances = maintenances.filter((m) => {
+      const t = new Date(m.date).getTime();
+      return !isNaN(t) && now - t <= THIRTY_DAYS_MS;
     });
 
-    timeline.sort((a, b) => a.date.getTime() - b.date.getTime());
+    // 2. Se não houve nenhuma atividade no mês anterior, o veículo é considerado inativo
+    const isInactive = recentRefuelings.length === 0 && recentMaintenances.length === 0;
 
-    if (timeline.length >= 2) {
-      const first = timeline[0];
-      const last = timeline[timeline.length - 1];
-      const diffMs = last.date.getTime() - first.date.getTime();
-      const diffDays = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
-      const diffKm = Math.max(0, last.odometer - first.odometer);
-
-      if (diffDays > 0 && diffKm > 0) {
-        averageDailyKm = Math.min(1000, Math.max(1, Math.round(diffKm / diffDays)));
-      }
-    } else if (timeline.length === 1 && vehicle.currentOdometer > timeline[0].odometer) {
-      const first = timeline[0];
-      const diffMs = Date.now() - first.date.getTime();
-      const diffDays = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
-      const diffKm = vehicle.currentOdometer - first.odometer;
-      if (diffDays > 0 && diffKm > 0) {
-        averageDailyKm = Math.min(1000, Math.max(1, Math.round(diffKm / diffDays)));
-      }
-    }
-
-    const defaultConsumption = isMoto ? 35.0 : 12.0;
+    // Estatísticas históricas gerais
     const stats = this.getVehicleStats(vehicle, refuelings, maintenances);
-    const avgConsumption =
-      stats.averageConsumption > 0
-        ? stats.averageConsumption
-        : vehicle?.mediaGeralKmPorLitro && vehicle.mediaGeralKmPorLitro > 0
-        ? vehicle.mediaGeralKmPorLitro
-        : defaultConsumption;
+    const fallbackConsumption = stats.averageConsumption > 0 ? stats.averageConsumption : 0;
 
     const prices = refuelings.map((r) => r.pricePerLiter).filter((p) => p > 0);
     const vehicleFuel = vehicle?.fuelType || 'gasolina';
@@ -362,20 +342,122 @@ export const Calculations = {
       ? latestFuelPrices[vehicleFuel] || latestFuelPrices.gasolina
       : undefined;
 
-    const averagePricePerLiter =
+    const fallbackPricePerLiter =
       latestPriceForFuel && latestPriceForFuel > 0
         ? latestPriceForFuel
         : prices.length > 0
         ? Number((prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(2))
         : 5.89;
 
-    const averageCostPerKm = Number((averagePricePerLiter / avgConsumption).toFixed(2));
+    const fallbackCostPerKm = fallbackConsumption > 0 ? Number((fallbackPricePerLiter / fallbackConsumption).toFixed(2)) : 0;
 
-    const projected30DaysKm = averageDailyKm * 30;
-    const projected30DaysCost = Number((projected30DaysKm * averageCostPerKm).toFixed(2));
+    // Se o veículo estiver inativo no mês anterior, não projeta gastos futuros
+    if (isInactive) {
+      return {
+        averageDailyKm: 0,
+        averageConsumptionKmPerLiter: fallbackConsumption,
+        averagePricePerLiter: fallbackPricePerLiter,
+        averageCostPerKm: fallbackCostPerKm,
+        projected30DaysKm: 0,
+        projected30DaysCost: 0,
+        projected60DaysCost: 0,
+        projected90DaysCost: 0,
+        upcomingMaintenancesCost30Days: 0,
+        totalProjectedCost30Days: 0,
+        isInactive: true,
+      };
+    }
+
+    // 3. VEÍCULO ATIVO: Cálculos baseados APENAS nos gastos e uso do mês anterior
+    const fuelSpentLastMonth = recentRefuelings.reduce(
+      (sum, r) => sum + Number(r.totalAmount || 0),
+      0
+    );
+
+    // Média de consumo apurada no mês anterior (se houver abastecimentos com km/L válido)
+    const recentConsumptions = recentRefuelings
+      .map((r) => r.consumptionKmPerLiter)
+      .filter((c): c is number => typeof c === 'number' && c > 0 && c < 50);
+
+    const monthAvgConsumption =
+      recentConsumptions.length > 0
+        ? Number(
+            (recentConsumptions.reduce((a, b) => a + b, 0) / recentConsumptions.length).toFixed(2)
+          )
+        : fallbackConsumption;
+
+    // Preço do combustível apurado no mês anterior
+    const recentPrices = recentRefuelings.map((r) => r.pricePerLiter).filter((p) => p > 0);
+    const monthPricePerLiter =
+      latestPriceForFuel && latestPriceForFuel > 0
+        ? latestPriceForFuel
+        : recentPrices.length > 0
+        ? Number((recentPrices.reduce((a, b) => a + b, 0) / recentPrices.length).toFixed(2))
+        : fallbackPricePerLiter;
+
+    const monthCostPerKm = monthAvgConsumption > 0 ? Number((monthPricePerLiter / monthAvgConsumption).toFixed(2)) : 0;
+
+    // Quilometragem percorrida no mês anterior (linha do tempo recente, odômetro e distâncias)
+    const recentTimeline: { date: Date; odometer: number }[] = [];
+    recentRefuelings.forEach((r) => {
+      const d = new Date(r.date);
+      if (!isNaN(d.getTime()) && r.odometer > 0) {
+        recentTimeline.push({ date: d, odometer: r.odometer });
+      }
+    });
+    recentMaintenances.forEach((m) => {
+      const d = new Date(m.date);
+      if (!isNaN(d.getTime()) && m.odometer > 0) {
+        recentTimeline.push({ date: d, odometer: m.odometer });
+      }
+    });
+    recentTimeline.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    let timelineDiffKm = 0;
+    if (recentTimeline.length >= 2) {
+      const first = recentTimeline[0];
+      const last = recentTimeline[recentTimeline.length - 1];
+      timelineDiffKm = Math.max(0, last.odometer - first.odometer);
+      if (vehicle.currentOdometer > last.odometer) {
+        timelineDiffKm = Math.max(timelineDiffKm, vehicle.currentOdometer - first.odometer);
+      }
+    } else if (recentTimeline.length === 1 && vehicle.currentOdometer > recentTimeline[0].odometer) {
+      timelineDiffKm = vehicle.currentOdometer - recentTimeline[0].odometer;
+    }
+
+    const recentSumDistance = recentRefuelings.reduce(
+      (sum, r) => sum + Number(r.distanceTraveled || 0),
+      0
+    );
+
+    const recentLiters = recentRefuelings.reduce((sum, r) => sum + Number(r.liters || 0), 0);
+    const estimatedKmFromLiters = Math.round(recentLiters * monthAvgConsumption);
+
+    const monthKm = Math.max(timelineDiffKm, recentSumDistance, estimatedKmFromLiters);
+
+    // Previsão para os próximos 30 dias baseada estritamente nos gastos do mês anterior:
+    // Se houve abastecimento, usa o valor gasto com combustível no mês anterior.
+    // Caso tenha rodado sem registro de abastecimento no mês, calcula a partir do km rodado no mês.
+    const projected30DaysCost =
+      fuelSpentLastMonth > 0
+        ? Number(fuelSpentLastMonth.toFixed(2))
+        : monthKm > 0 && monthCostPerKm > 0
+        ? Number((monthKm * monthCostPerKm).toFixed(2))
+        : 0;
+
+    const projected30DaysKm =
+      monthKm > 0
+        ? monthKm
+        : monthCostPerKm > 0 && projected30DaysCost > 0
+        ? Math.round(projected30DaysCost / monthCostPerKm)
+        : 0;
+
+    const averageDailyKm = projected30DaysKm > 0 ? Math.max(1, Math.round(projected30DaysKm / 30)) : 0;
+
     const projected60DaysCost = Number((projected30DaysCost * 2).toFixed(2));
     const projected90DaysCost = Number((projected30DaysCost * 3).toFixed(2));
 
+    // Manutenções preventivas programadas para o próximo período com base no km projetado
     const alerts = this.getMaintenanceAlerts(vehicle.currentOdometer, maintenances, vehicle);
     const upcomingMaintenancesCost30Days = alerts
       .filter(
@@ -392,15 +474,16 @@ export const Calculations = {
 
     return {
       averageDailyKm,
-      averageConsumptionKmPerLiter: avgConsumption,
-      averagePricePerLiter,
-      averageCostPerKm,
+      averageConsumptionKmPerLiter: monthAvgConsumption,
+      averagePricePerLiter: monthPricePerLiter,
+      averageCostPerKm: monthCostPerKm,
       projected30DaysKm,
       projected30DaysCost,
       projected60DaysCost,
       projected90DaysCost,
       upcomingMaintenancesCost30Days,
       totalProjectedCost30Days,
+      isInactive: false,
     };
   },
 
@@ -420,6 +503,9 @@ export const Calculations = {
     let totalUpcomingMntCost = 0;
     let totalDailyKm = 0;
     let weightedConsumptionSum = 0;
+    let vehiclesWithConsumptionCount = 0;
+    let activeVehiclesCount = 0;
+    let inactiveVehiclesCount = 0;
 
     vehicles.forEach((v) => {
       const vRefs = allRefuelings.filter((r) => r.vehicleId === v.id);
@@ -428,13 +514,22 @@ export const Calculations = {
 
       breakdowns.push({ vehicle: v, forecast: vForecast });
 
-      totalProjected30DaysKm += vForecast.projected30DaysKm;
-      totalProjected30DaysCost += vForecast.projected30DaysCost;
-      totalProjected60DaysCost += vForecast.projected60DaysCost;
-      totalProjected90DaysCost += vForecast.projected90DaysCost;
-      totalUpcomingMntCost += vForecast.upcomingMaintenancesCost30Days;
-      totalDailyKm += vForecast.averageDailyKm;
-      weightedConsumptionSum += vForecast.averageConsumptionKmPerLiter;
+      // Se o veículo estiver inativo nos últimos 30 dias, NÃO soma nos gastos futuros da frota!
+      if (vForecast.isInactive) {
+        inactiveVehiclesCount++;
+      } else {
+        activeVehiclesCount++;
+        totalProjected30DaysKm += vForecast.projected30DaysKm;
+        totalProjected30DaysCost += vForecast.projected30DaysCost;
+        totalProjected60DaysCost += vForecast.projected60DaysCost;
+        totalProjected90DaysCost += vForecast.projected90DaysCost;
+        totalUpcomingMntCost += vForecast.upcomingMaintenancesCost30Days;
+        totalDailyKm += vForecast.averageDailyKm;
+        if (vForecast.averageConsumptionKmPerLiter > 0) {
+          weightedConsumptionSum += vForecast.averageConsumptionKmPerLiter;
+          vehiclesWithConsumptionCount++;
+        }
+      }
     });
 
     const allPrices = allRefuelings.map((r) => r.pricePerLiter).filter((p) => p > 0);
@@ -446,7 +541,9 @@ export const Calculations = {
         : 5.89;
 
     const avgConsumption =
-      vehicles.length > 0 ? Number((weightedConsumptionSum / vehicles.length).toFixed(2)) : 12.0;
+      vehiclesWithConsumptionCount > 0
+        ? Number((weightedConsumptionSum / vehiclesWithConsumptionCount).toFixed(2))
+        : 0;
 
     const avgCostPerKm =
       totalProjected30DaysKm > 0
@@ -467,6 +564,9 @@ export const Calculations = {
         (totalProjected30DaysCost + totalUpcomingMntCost).toFixed(2)
       ),
       vehicleBreakdowns: breakdowns,
+      isInactive: activeVehiclesCount === 0 && vehicles.length > 0,
+      activeVehiclesCount,
+      inactiveVehiclesCount,
     };
   },
 

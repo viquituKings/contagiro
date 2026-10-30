@@ -1,22 +1,22 @@
-import React, { useState, useCallback } from 'react';
-import {
-  StyleSheet,
-  View,
-  Text,
-  ScrollView,
-  TextInput,
-  useColorScheme,
-  TouchableOpacity,
-  RefreshControl,
-  ActivityIndicator,
-  Image,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Calculations } from '@/services/calculations';
+import { StorageService } from '@/services/storage';
+import { FuelForecast, FuelPrices, MaintenanceItem, Refueling, Vehicle } from '@/types/vehicle';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
-import { StorageService } from '@/services/storage';
-import { Calculations } from '@/services/calculations';
-import { Vehicle, Refueling, MaintenanceItem, FuelForecast, FuelPrices } from '@/types/vehicle';
+import { useCallback, useState } from 'react';
+import {
+  ActivityIndicator,
+  Image,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useColorScheme,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export function isFlexVehicle(v: Vehicle | null): boolean {
   if (!v) return false;
@@ -199,17 +199,22 @@ export default function ForecastScreen() {
       ? Calculations.calculateFleetForecast(vehicles, allRefuelings, allMaintenances, effectiveFuelPrices)
       : null
     : vehicle
-    ? Calculations.calculateFuelForecast(vehicle, refuelings, maintenances, effectiveFuelPrices)
-    : null;
+      ? Calculations.calculateFuelForecast(vehicle, refuelings, maintenances, effectiveFuelPrices)
+      : null;
 
-  // Calculadora Flex (somente para veículo individual flex)
-  const isFlex = !isAllSelected && isFlexVehicle(vehicle);
+  // Calculadora Flex (exibida para todos os veículos ou se o veículo individual for flex)
+  const showFlexCalculator = isAllSelected || isFlexVehicle(vehicle);
+  const avgFleetTank =
+    vehicles.length > 0
+      ? Math.round(vehicles.reduce((acc, v) => acc + (v.tankCapacity || 45), 0) / vehicles.length)
+      : 50;
+  const currentTankCapacity = vehicle?.tankCapacity || avgFleetTank;
   const ratioNum = (parseFloat(customRatio) || 70) / 100;
   const flexResult = Calculations.calculateFlex(
     gasNum,
     etaNum,
     ratioNum,
-    vehicle?.tankCapacity || 45
+    currentTankCapacity
   );
 
   const theme = {
@@ -238,7 +243,7 @@ export default function ForecastScreen() {
           <Text style={[styles.title, { color: theme.text }]}>Previsão & Economia</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
             <Text style={[styles.subtitle, { color: theme.textMuted }]}>
-              Estimativas inteligentes com base na sua rotina de direção
+              Estimativas inteligentes baseadas nos gastos do mês anterior
             </Text>
             {loading && !refreshing && (
               <View
@@ -318,8 +323,8 @@ export default function ForecastScreen() {
                               ? 'rgba(16, 185, 129, 0.25)'
                               : 'rgba(16, 185, 129, 0.15)'
                             : isDark
-                            ? '#1E293B'
-                            : '#E2E8F0',
+                              ? '#1E293B'
+                              : '#E2E8F0',
                         },
                       ]}
                     >
@@ -388,8 +393,8 @@ export default function ForecastScreen() {
                                     ? 'rgba(16, 185, 129, 0.25)'
                                     : 'rgba(16, 185, 129, 0.15)'
                                   : isDark
-                                  ? '#1E293B'
-                                  : '#E2E8F0',
+                                    ? '#1E293B'
+                                    : '#E2E8F0',
                               },
                             ]}
                           >
@@ -510,163 +515,8 @@ export default function ForecastScreen() {
           </View>
         ) : forecast ? (
           <>
-            {/* CARD MOTOR DE PREVISÃO FINANCEIRA */}
-            <View style={[styles.forecastCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-              <View style={styles.forecastCardHeader}>
-                <View style={styles.iconBadge}>
-                  <Ionicons name="sparkles" size={20} color="#10B981" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.forecastCardTitle, { color: theme.text }]}>
-                    {isAllSelected ? 'Projeção Financeira Consolidada' : `Projeção: ${vehicle?.name}`}
-                  </Text>
-                  <Text style={[styles.forecastCardSub, { color: theme.textMuted }]}>
-                    {isAllSelected
-                      ? `Média da frota: ~${forecast.averageDailyKm} km/dia somados (${vehicles.length} veículos)`
-                      : `Média calculada: ~${forecast.averageDailyKm} km/dia rodados`}
-                  </Text>
-                </View>
-                {isAllSelected && (
-                  <View style={[styles.fleetTag, { backgroundColor: theme.accentLight, borderColor: theme.accent }]}>
-                    <Text style={[styles.fleetTagText, { color: theme.accent }]}>Frota Total</Text>
-                  </View>
-                )}
-              </View>
-
-              {/* Total 30 dias em destaque */}
-              <View style={[styles.highlightBox, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
-                <Text style={[styles.highlightLabel, { color: theme.textMuted }]}>
-                  {isAllSelected
-                    ? 'Previsão de Gasto Total Consolidado (Próximos 30 dias):'
-                    : `Previsão de Gasto Total (Próximos 30 dias):`}
-                </Text>
-                <Text style={[styles.highlightAmount, { color: theme.accent }]}>
-                  R$ {forecast.totalProjectedCost30Days.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </Text>
-                <Text style={[styles.highlightDesc, { color: theme.textMuted }]}>
-                  Inclui combustível estimado + revisões programadas no período
-                </Text>
-              </View>
-
-              {/* Comparativo de Custos: 30d, 60d, 90d */}
-              <Text style={[styles.subSectionTitle, { color: theme.text }]}>
-                Evolução dos Custos com Combustível:
-              </Text>
-
-              <View style={styles.projectionsRow}>
-                {/* 30 dias */}
-                <View style={[styles.periodCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
-                  <Text style={[styles.periodTitle, { color: theme.textMuted }]}>30 Dias</Text>
-                  <Text style={[styles.periodValue, { color: theme.text }]}>
-                    R$ {forecast.projected30DaysCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </Text>
-                  <Text style={[styles.periodKm, { color: theme.accent }]}>
-                    ~{forecast.projected30DaysKm.toLocaleString('pt-BR')} km
-                  </Text>
-                </View>
-
-                {/* 60 dias */}
-                <View style={[styles.periodCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
-                  <Text style={[styles.periodTitle, { color: theme.textMuted }]}>60 Dias</Text>
-                  <Text style={[styles.periodValue, { color: theme.text }]}>
-                    R$ {forecast.projected60DaysCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </Text>
-                  <Text style={[styles.periodKm, { color: theme.accent }]}>
-                    ~{(forecast.projected30DaysKm * 2).toLocaleString('pt-BR')} km
-                  </Text>
-                </View>
-
-                {/* 90 dias */}
-                <View style={[styles.periodCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
-                  <Text style={[styles.periodTitle, { color: theme.textMuted }]}>90 Dias</Text>
-                  <Text style={[styles.periodValue, { color: theme.text }]}>
-                    R$ {forecast.projected90DaysCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </Text>
-                  <Text style={[styles.periodKm, { color: theme.accent }]}>
-                    ~{(forecast.projected30DaysKm * 3).toLocaleString('pt-BR')} km
-                  </Text>
-                </View>
-              </View>
-
-              {/* Parâmetros do cálculo */}
-              <View style={styles.paramsBox}>
-                <View style={styles.paramItem}>
-                  <Ionicons name="speedometer-outline" size={16} color={theme.textMuted} />
-                  <Text style={[styles.paramText, { color: theme.textMuted }]}>
-                    {isAllSelected ? 'Consumo Médio Ponderado: ' : 'Consumo Médio: '}
-                    <Text style={{ color: theme.text, fontWeight: 'bold' }}>
-                      {forecast.averageConsumptionKmPerLiter} km/L
-                    </Text>
-                  </Text>
-                </View>
-                <View style={styles.paramItem}>
-                  <Ionicons name="pricetag-outline" size={16} color={theme.textMuted} />
-                  <Text style={[styles.paramText, { color: theme.textMuted }]}>
-                    Preço Médio/L:{' '}
-                    <Text style={{ color: theme.text, fontWeight: 'bold' }}>
-                      R$ {forecast.averagePricePerLiter.toFixed(2)}
-                    </Text>
-                  </Text>
-                </View>
-              </View>
-
-              {/* DETALHAMENTO INDIVIDUAL POR VEÍCULO QUANDO "TODOS OS VEÍCULOS" ESTÁ SELECIONADO */}
-              {isAllSelected && forecast.vehicleBreakdowns && forecast.vehicleBreakdowns.length > 0 && (
-                <View style={styles.breakdownSection}>
-                  <Text style={[styles.breakdownTitle, { color: theme.text }]}>
-                    Detalhamento por Veículo (Próximos 30 dias):
-                  </Text>
-                  <View style={styles.breakdownList}>
-                    {forecast.vehicleBreakdowns.map((b) => (
-                      <View
-                        key={b.vehicle.id}
-                        style={[
-                          styles.breakdownCard,
-                          { backgroundColor: theme.bg, borderColor: theme.cardBorder },
-                        ]}
-                      >
-                        <View style={styles.breakdownCardTop}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <Ionicons
-                              name={b.vehicle.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
-                              size={16}
-                              color={theme.accent}
-                            />
-                            <Text style={[styles.breakdownVehName, { color: theme.text }]}>
-                              {b.vehicle.name}
-                            </Text>
-                            <Text style={[styles.breakdownVehPlate, { color: theme.textMuted }]}>
-                              ({b.vehicle.plate})
-                            </Text>
-                          </View>
-                          <Text style={[styles.breakdownTotal, { color: theme.accent }]}>
-                            R$ {b.forecast.totalProjectedCost30Days.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </Text>
-                        </View>
-                        <View style={styles.breakdownDetailsRow}>
-                          <Text style={[styles.breakdownDetailText, { color: theme.textMuted }]}>
-                            Combustível:{' '}
-                            <Text style={{ color: theme.text, fontWeight: '600' }}>
-                              R$ {b.forecast.projected30DaysCost.toFixed(2)}
-                            </Text>{' '}
-                            (~{b.forecast.projected30DaysKm} km)
-                          </Text>
-                          <Text style={[styles.breakdownDetailText, { color: theme.textMuted }]}>
-                            Manutenções:{' '}
-                            <Text style={{ color: theme.text, fontWeight: '600' }}>
-                              R$ {b.forecast.upcomingMaintenancesCost30Days.toFixed(2)}
-                            </Text>
-                          </Text>
-                        </View>
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              )}
-            </View>
-
-            {/* CALCULADORA FLEX INTELIGENTE (EXIBIDA APENAS QUANDO O VEÍCULO ESPECÍFICO ACEITA GASOLINA E ETANOL) */}
-            {isFlex && (
+            {/* CALCULADORA FLEX INTELIGENTE (EXIBIDA QUANDO 'TODOS OS VEÍCULOS' ESTIVER SELECIONADO OU SE O VEÍCULO FOR FLEX) */}
+            {showFlexCalculator && (
               <View style={[styles.flexCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
                 <View style={styles.forecastCardHeader}>
                   <View style={[styles.iconBadge, { backgroundColor: 'rgba(139, 92, 246, 0.15)' }]}>
@@ -677,7 +527,9 @@ export default function ForecastScreen() {
                       Calculadora Flex Inteligente
                     </Text>
                     <Text style={[styles.forecastCardSub, { color: theme.textMuted }]}>
-                      Análise para {vehicle?.name}: descubra qual combustível compensa mais
+                      {isAllSelected
+                        ? 'Análise geral da frota: descubra qual combustível compensa mais'
+                        : `Análise para ${vehicle?.name}: descubra qual combustível compensa mais`}
                     </Text>
                   </View>
                 </View>
@@ -768,7 +620,7 @@ export default function ForecastScreen() {
                           <Text style={{ color: theme.accent, fontWeight: '900' }}>
                             R$ {flexResult.savingsFullTank.toFixed(2)}
                           </Text>{' '}
-                          no tanque cheio ({vehicle?.tankCapacity || 45}L).
+                          {isAllSelected ? `no tanque cheio médio (${currentTankCapacity}L).` : `no tanque cheio (${currentTankCapacity}L).`}
                         </Text>
                       </View>
                     )}
@@ -776,6 +628,226 @@ export default function ForecastScreen() {
                 )}
               </View>
             )}
+            {/* CARD MOTOR DE PREVISÃO FINANCEIRA */}
+            <View style={[styles.forecastCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+              <View style={styles.forecastCardHeader}>
+                <View style={styles.iconBadge}>
+                  <Ionicons name="sparkles" size={20} color="#10B981" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.forecastCardTitle, { color: theme.text }]}>
+                    {isAllSelected ? 'Projeção Financeira Consolidada' : `Projeção: ${vehicle?.name}`}
+                  </Text>
+                  <Text style={[styles.forecastCardSub, { color: theme.textMuted }]}>
+                    {isAllSelected
+                      ? (forecast.inactiveVehiclesCount && forecast.inactiveVehiclesCount > 0)
+                        ? `Média da frota: ~${forecast.averageDailyKm} km/dia somados (${forecast.activeVehiclesCount} de ${vehicles.length} veículos ativos nos últimos 30d)`
+                        : `Média da frota: ~${forecast.averageDailyKm} km/dia somados (${vehicles.length} veículos)`
+                      : forecast.isInactive
+                      ? 'Veículo inativo nos últimos 30 dias (gastos futuros pausados)'
+                      : `Média no mês anterior: ~${forecast.averageDailyKm} km/dia rodados`}
+                  </Text>
+                </View>
+                {isAllSelected && (
+                  <View style={[styles.fleetTag, { backgroundColor: theme.accentLight, borderColor: theme.accent }]}>
+                    <Text style={[styles.fleetTagText, { color: theme.accent }]}>Frota Total</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* AVISO DE VEÍCULO SEM SEGUNDO ABASTECIMENTO (APENAS 1º TANQUE) */}
+              {!isAllSelected && !forecast.isInactive && forecast.averageConsumptionKmPerLiter === 0 && (
+                <View
+                  style={[
+                    styles.pendingNoticeBanner,
+                    {
+                      backgroundColor: isDark ? 'rgba(245, 158, 11, 0.12)' : '#FEF3C7',
+                      borderColor: isDark ? 'rgba(245, 158, 11, 0.3)' : '#FCD34D',
+                    },
+                  ]}
+                >
+                  <Ionicons name="information-circle-outline" size={20} color="#D97706" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.pendingNoticeTitle, { color: isDark ? '#FBBF24' : '#92400E' }]}>
+                      Apenas Tanque Base Registrado
+                    </Text>
+                    <Text style={[styles.pendingNoticeSub, { color: isDark ? '#FCD34D' : '#B45309' }]}>
+                      Por não ter um segundo abastecimento, este veículo ainda não possui média calculada.
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* AVISO DE VEÍCULO INATIVO */}
+              {!isAllSelected && forecast.isInactive && (
+                <View
+                  style={[
+                    styles.inactiveBanner,
+                    {
+                      backgroundColor: isDark ? 'rgba(148, 163, 184, 0.1)' : '#F1F5F9',
+                      borderColor: isDark ? '#334155' : '#CBD5E1',
+                    },
+                  ]}
+                >
+                  <Ionicons name="pause-circle-outline" size={20} color={theme.textMuted} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.inactiveBannerTitle, { color: theme.text }]}>
+                      Veículo Inativo nos Últimos 30 Dias
+                    </Text>
+                    <Text style={[styles.inactiveBannerSub, { color: theme.textMuted }]}>
+                      Nenhum abastecimento ou manutenção foi registrado nos últimos 30 dias.
+                      O histórico foi mantido, mas as previsões de gastos futuros estão pausadas.
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Total 30 dias em destaque */}
+              <View style={[styles.highlightBox, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                <Text style={[styles.highlightLabel, { color: theme.textMuted }]}>
+                  {isAllSelected
+                    ? 'Previsão de Gasto Total Consolidado (Próximos 30 dias):'
+                    : `Previsão de Gasto Total (Próximos 30 dias):`}
+                </Text>
+                <Text style={[styles.highlightAmount, { color: theme.accent }]}>
+                  R$ {forecast.totalProjectedCost30Days.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </Text>
+                <Text style={[styles.highlightDesc, { color: theme.textMuted }]}>
+                  Baseado nos gastos do mês anterior + revisões programadas no período
+                </Text>
+              </View>
+
+              {/* Comparativo de Custos: 30d, 60d, 90d */}
+              <Text style={[styles.subSectionTitle, { color: theme.text }]}>
+                Evolução dos Custos com Combustível (Base: mês anterior):
+              </Text>
+
+              <View style={styles.projectionsRow}>
+                {/* 30 dias */}
+                <View style={[styles.periodCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                  <Text style={[styles.periodTitle, { color: theme.textMuted }]}>30 Dias</Text>
+                  <Text style={[styles.periodValue, { color: theme.text }]}>
+                    R$ {forecast.projected30DaysCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </Text>
+                  <Text style={[styles.periodKm, { color: theme.accent }]}>
+                    ~{forecast.projected30DaysKm.toLocaleString('pt-BR')} km
+                  </Text>
+                </View>
+
+                {/* 60 dias */}
+                <View style={[styles.periodCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                  <Text style={[styles.periodTitle, { color: theme.textMuted }]}>60 Dias</Text>
+                  <Text style={[styles.periodValue, { color: theme.text }]}>
+                    R$ {forecast.projected60DaysCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </Text>
+                  <Text style={[styles.periodKm, { color: theme.accent }]}>
+                    ~{(forecast.projected30DaysKm * 2).toLocaleString('pt-BR')} km
+                  </Text>
+                </View>
+
+                {/* 90 dias */}
+                <View style={[styles.periodCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                  <Text style={[styles.periodTitle, { color: theme.textMuted }]}>90 Dias</Text>
+                  <Text style={[styles.periodValue, { color: theme.text }]}>
+                    R$ {forecast.projected90DaysCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </Text>
+                  <Text style={[styles.periodKm, { color: theme.accent }]}>
+                    ~{(forecast.projected30DaysKm * 3).toLocaleString('pt-BR')} km
+                  </Text>
+                </View>
+              </View>
+
+              {/* Parâmetros do cálculo */}
+              <View style={styles.paramsBox}>
+                <View style={styles.paramItem}>
+                  <Ionicons name="speedometer-outline" size={16} color={theme.textMuted} />
+                  <Text style={[styles.paramText, { color: theme.textMuted }]}>
+                    {isAllSelected ? 'Consumo Médio Ponderado: ' : 'Consumo Médio: '}
+                    <Text style={{ color: theme.text, fontWeight: 'bold' }}>
+                      {forecast.averageConsumptionKmPerLiter} km/L
+                    </Text>
+                  </Text>
+                </View>
+                <View style={styles.paramItem}>
+                  <Ionicons name="pricetag-outline" size={16} color={theme.textMuted} />
+                  <Text style={[styles.paramText, { color: theme.textMuted }]}>
+                    Preço Médio/L:{' '}
+                    <Text style={{ color: theme.text, fontWeight: 'bold' }}>
+                      R$ {forecast.averagePricePerLiter.toFixed(2)}
+                    </Text>
+                  </Text>
+                </View>
+              </View>
+
+              {/* DETALHAMENTO INDIVIDUAL POR VEÍCULO QUANDO "TODOS OS VEÍCULOS" ESTÁ SELECIONADO */}
+              {isAllSelected && forecast.vehicleBreakdowns && forecast.vehicleBreakdowns.length > 0 && (
+                <View style={styles.breakdownSection}>
+                  <Text style={[styles.breakdownTitle, { color: theme.text }]}>
+                    Detalhamento por Veículo (Próximos 30 dias):
+                  </Text>
+                  <View style={styles.breakdownList}>
+                    {forecast.vehicleBreakdowns.map((b) => (
+                      <View
+                        key={b.vehicle.id}
+                        style={[
+                          styles.breakdownCard,
+                          { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                        ]}
+                      >
+                        <View style={styles.breakdownCardTop}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons
+                              name={b.vehicle.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
+                              size={16}
+                              color={b.forecast.isInactive ? theme.textMuted : theme.accent}
+                            />
+                            <Text style={[styles.breakdownVehName, { color: theme.text }]}>
+                              {b.vehicle.name}
+                            </Text>
+                            <Text style={[styles.breakdownVehPlate, { color: theme.textMuted }]}>
+                              ({b.vehicle.plate})
+                            </Text>
+                            {b.forecast.isInactive && (
+                              <View style={[styles.inactivePill, { backgroundColor: isDark ? 'rgba(148, 163, 184, 0.15)' : '#E2E8F0' }]}>
+                                <Text style={[styles.inactivePillText, { color: theme.textMuted }]}>Inativo (30d)</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text style={[styles.breakdownTotal, { color: b.forecast.isInactive ? theme.textMuted : theme.accent }]}>
+                            R$ {b.forecast.totalProjectedCost30Days.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </Text>
+                        </View>
+                        <View style={styles.breakdownDetailsRow}>
+                          {b.forecast.isInactive ? (
+                            <Text style={[styles.breakdownDetailText, { color: theme.textMuted }]}>
+                              Sem uso recente • Gastos futuros pausados
+                            </Text>
+                          ) : (
+                            <>
+                              <Text style={[styles.breakdownDetailText, { color: theme.textMuted }]}>
+                                Combustível:{' '}
+                                <Text style={{ color: theme.text, fontWeight: '600' }}>
+                                  R$ {b.forecast.projected30DaysCost.toFixed(2)}
+                                </Text>{' '}
+                                (~{b.forecast.projected30DaysKm} km)
+                              </Text>
+                              <Text style={[styles.breakdownDetailText, { color: theme.textMuted }]}>
+                                Manutenções:{' '}
+                                <Text style={{ color: theme.text, fontWeight: '600' }}>
+                                  R$ {b.forecast.upcomingMaintenancesCost30Days.toFixed(2)}
+                                </Text>
+                              </Text>
+                            </>
+                          )}
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </View>
+
+
           </>
         ) : null}
       </ScrollView>
@@ -1154,6 +1226,51 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 10,
     marginTop: 4,
+  },
+  pendingNoticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 10,
+  },
+  pendingNoticeTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  pendingNoticeSub: {
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  inactiveBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 10,
+  },
+  inactiveBannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  inactiveBannerSub: {
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  inactivePill: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+  },
+  inactivePillText: {
+    fontSize: 10,
+    fontWeight: '600',
   },
   savingsText: {
     fontSize: 12,

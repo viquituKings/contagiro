@@ -24,6 +24,7 @@ import {
 import { SyncService } from '@/services/sync-service';
 import { ensureOfflineCachedImage, saveAvatarToLocalCache } from '@/services/image-picker';
 import { compareDatesDesc } from '@/utils/date';
+import { parseEngineDisplacement } from '@/utils/engine';
 
 export const MAX_CACHED_REFUELINGS_PER_VEHICLE = 5;
 export const MAX_CACHED_MAINTENANCES_PER_VEHICLE = 5;
@@ -297,7 +298,7 @@ export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknow
     photoUrl: (data.photoUrl as string) || (data.fotoUrl as string) || undefined,
     flexEfficiencyRatio: Number(data.flexEfficiencyRatio) || 0.70,
     vehicleType: (data.tipoVeiculo === 'moto' ? 'moto' : 'carro') as VehicleType,
-    engineDisplacement: data.cilindrada ? Number(data.cilindrada) : undefined,
+    engineDisplacement: parseEngineDisplacement(data.cilindrada),
     cadManPeriodica: Boolean(data.cadManPeriodica),
     revisaoKm: data.revisaoKm != null ? Number(data.revisaoKm) : undefined,
     revisaoMes: data.revisaoMes != null ? Number(data.revisaoMes) : undefined,
@@ -939,7 +940,7 @@ export const StorageService = {
           capacidadeTanque: vehicle.tankCapacity,
           tanque: vehicle.tankCapacity,
           tankCapacity: vehicle.tankCapacity,
-          cilindrada: vehicle.engineDisplacement || (isCar ? 1000 : 150),
+          cilindrada: parseEngineDisplacement(vehicle.engineDisplacement) || (isCar ? 1000 : 150),
           kmAtual: vehicle.currentOdometer,
           ultimoKm: vehicle.currentOdometer,
           ultimoComb:

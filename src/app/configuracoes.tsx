@@ -1033,7 +1033,7 @@ export default function SettingsScreen() {
             </TouchableOpacity>
 
             <Text style={[styles.appVersionText, { color: theme.textMuted }]}>
-              ContaGiro • Versão 1.0.1
+              ContaGiro • Versão 1.1.0
             </Text>
           </View>
         </ScrollView>

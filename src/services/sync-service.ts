@@ -1,3 +1,4 @@
+import { parseEngineDisplacement } from '@/utils/engine';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   collection,
@@ -273,7 +274,7 @@ export const SyncService = {
                 capacidadeTanque: localVeh.tankCapacity,
                 tanque: localVeh.tankCapacity,
                 tankCapacity: localVeh.tankCapacity,
-                cilindrada: localVeh.engineDisplacement || (isCar ? 1000 : 150),
+                cilindrada: parseEngineDisplacement(localVeh.engineDisplacement) || (isCar ? 1000 : 150),
                 kmAtual: localVeh.currentOdometer,
                 ultimoKm: localVeh.currentOdometer,
                 ultimoComb:

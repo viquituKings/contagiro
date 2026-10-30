@@ -107,17 +107,17 @@ Basta abrir o aplicativo **Expo Go** no celular, escanear o **QR Code** exibido 
 Para dar continuidade e levar o **ContaGiro** do estágio de desenvolvimento até a publicação na Google Play Store, definimos o seguinte plano de execução:
 
 ### Fase 1: Importação dos Dados do App Antigo (Ionic) 🔄
-- [ ] Mapear o formato de dados exportado pelo app Ionic anterior (SQLite / JSON / CSV).
-- [ ] Criar função de importação/backup em `src/services/storage.ts` para que os usuários atuais possam migrar seus históricos sem perder nada.
+- [x] Mapear o formato de dados exportado pelo app Ionic anterior (SQLite / JSON / CSV).
+- [x] Criar função de importação/backup em `src/services/storage.ts` para que os usuários atuais possam migrar seus históricos sem perder nada.
 
 ### Fase 2: Gráficos e Relatórios Visuais 📊
-- [ ] Integrar biblioteca de gráficos (como `react-native-gifted-charts` ou `victory-native`).
+- [x] Integrar biblioteca de gráficos (como `react-native-gifted-charts` ou `victory-native`).
 - [ ] Gráfico de evolução do consumo médio ao longo dos meses.
 - [ ] Gráfico de divisão de despesas (Combustível vs Oficina vs Impostos/Seguro).
 
 ### Fase 3: Notificações e Lembretes Locais 🔔
-- [ ] Adicionar `expo-notifications` para disparar lembretes periódicos no celular.
-- [ ] Notificar o usuário quando uma manutenção atingir o status **"Atenção"** ou **"Vencida"**.
+- [x] Adicionar `expo-notifications` para disparar lembretes periódicos no celular.
+- [x] Notificar o usuário quando uma manutenção atingir o status **"Atenção"** ou **"Vencida"**.
 - [ ] Lembrete semanal para o usuário atualizar o odômetro do carro.
 
 ### Fase 4: Exportação de Relatórios em PDF / Excel 📑

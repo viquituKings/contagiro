@@ -129,6 +129,10 @@ export interface FuelForecast {
   upcomingMaintenancesCost30Days: number;
   totalProjectedCost30Days: number;
   vehicleBreakdowns?: { vehicle: Vehicle; forecast: FuelForecast }[];
+  isInactive?: boolean;
+  activeVehiclesCount?: number;
+  inactiveVehiclesCount?: number;
+  hasCalculatedConsumption?: boolean;
 }
 
 export interface FuelPrices {

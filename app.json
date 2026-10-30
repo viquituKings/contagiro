@@ -2,14 +2,14 @@
   "expo": {
     "name": "ContaGiro",
     "slug": "contagiro",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "contagiro",
     "userInterfaceStyle": "automatic",
     "android": {
       "package": "com.reistech.contagiro",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#101D2E",
         "foregroundImage": "./assets/images/android-icon-foreground.png"
@@ -68,6 +68,11 @@
       "eas": {
         "projectId": "9967c17e-2044-4687-a6ab-f597ceb5ae95"
       }
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.reistech.contagiro",
+      "buildNumber": "3"
     }
   }
 }
