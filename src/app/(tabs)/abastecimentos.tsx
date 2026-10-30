@@ -70,6 +70,28 @@ export default function RefuelingsScreen() {
     if (isPull) setRefreshing(true);
     else setLoading(true);
     try {
+      // 1. Carregamento instantâneo do cache local (5 últimos abastecimentos + totalizadores)
+      const [cachedVehicles, activeId] = await Promise.all([
+        StorageService.getCachedVehicles(),
+        StorageService.getActiveVehicleId(),
+      ]);
+      if (cachedVehicles.length > 0) {
+        setVehicles(cachedVehicles);
+        const cachedCur =
+          cachedVehicles.find((v) => v.id === activeId) || cachedVehicles[0] || null;
+        setVehicle(cachedCur);
+        if (cachedCur) {
+          const cachedList = await StorageService.getCachedRefuelings(cachedCur.id);
+          setRefuelings(cachedList);
+          setOdometer(String(cachedCur.currentOdometer));
+          if (cachedCur.acceptedFuelTypes && cachedCur.acceptedFuelTypes.length > 0) {
+            setFuelType(cachedCur.acceptedFuelTypes[0]);
+          }
+          setLoading(false);
+        }
+      }
+
+      // 2. Sincronização / atualização com preservação offline
       const allVehicles = await StorageService.getVehicles();
       setVehicles(allVehicles);
 
@@ -78,10 +100,15 @@ export default function RefuelingsScreen() {
 
       if (curVehicle) {
         const list = await StorageService.getRefuelings(curVehicle.id);
+        const updatedVehicles = await StorageService.getCachedVehicles();
+        const updatedCur =
+          updatedVehicles.find((v) => v.id === curVehicle.id) || curVehicle;
+        setVehicles(updatedVehicles);
+        setVehicle(updatedCur);
         setRefuelings(list);
-        setOdometer(String(curVehicle.currentOdometer));
-        if (curVehicle.acceptedFuelTypes && curVehicle.acceptedFuelTypes.length > 0) {
-          setFuelType(curVehicle.acceptedFuelTypes[0]);
+        setOdometer(String(updatedCur.currentOdometer));
+        if (updatedCur.acceptedFuelTypes && updatedCur.acceptedFuelTypes.length > 0) {
+          setFuelType(updatedCur.acceptedFuelTypes[0]);
         }
       } else {
         setRefuelings([]);
@@ -111,12 +138,19 @@ export default function RefuelingsScreen() {
     if (veh.acceptedFuelTypes && veh.acceptedFuelTypes.length > 0) {
       setFuelType(veh.acceptedFuelTypes[0]);
     }
-    setRefuelings([]);
 
     try {
       await StorageService.setActiveVehicleId(veh.id);
+      const cachedList = await StorageService.getCachedRefuelings(veh.id);
+      if (requestId === latestSwitchRequestId.current) {
+        setRefuelings(cachedList);
+      }
       const list = await StorageService.getRefuelings(veh.id);
       if (requestId === latestSwitchRequestId.current) {
+        const updatedVehicles = await StorageService.getCachedVehicles();
+        const updatedVeh = updatedVehicles.find((v) => v.id === veh.id) || veh;
+        setVehicles(updatedVehicles);
+        setVehicle(updatedVeh);
         setRefuelings(list);
       }
     } catch (err) {
@@ -298,15 +332,31 @@ export default function RefuelingsScreen() {
     await saveRefuelingItem(odomNum, priceNum, totalNum, litersNum);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    const online = await StorageService.checkOnlineStatus(true);
+    if (!online) {
+      Alert.alert(
+        'Modo Offline',
+        'Não é possível excluir abastecimentos do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+      return;
+    }
+
     Alert.alert('Excluir Abastecimento', 'Deseja realmente remover este registro do histórico e do banco de dados?', [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
-          await StorageService.deleteRefueling(id, vehicle?.id);
-          await loadData();
+          try {
+            await StorageService.deleteRefueling(id, vehicle?.id);
+            await loadData();
+          } catch (err: any) {
+            Alert.alert(
+              'Modo Offline',
+              err?.message || 'Não é possível excluir informações do banco de dados enquanto estiver offline.'
+            );
+          }
         },
       },
     ]);
@@ -337,16 +387,34 @@ export default function RefuelingsScreen() {
     }
   };
 
-  // Métricas agregadas do veículo selecionado
-  const totalSpent = refuelings.reduce((sum, r) => sum + r.totalAmount, 0);
-  const totalLiters = refuelings.reduce((sum, r) => sum + r.liters, 0);
+  // Métricas e totalizadores agregados do veículo selecionado (utiliza os totalizadores em cache quando offline)
+  const listTotalSpent = refuelings.reduce((sum, r) => sum + r.totalAmount, 0);
+  const listTotalLiters = refuelings.reduce((sum, r) => sum + r.liters, 0);
+  const totalSpent =
+    vehicle?.totalGastoAbast != null &&
+    (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length &&
+    vehicle.totalGastoAbast >= listTotalSpent
+      ? vehicle.totalGastoAbast
+      : listTotalSpent;
+  const totalLiters =
+    vehicle?.totalLitrosAbast != null &&
+    (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length &&
+    vehicle.totalLitrosAbast >= listTotalLiters
+      ? vehicle.totalLitrosAbast
+      : listTotalLiters;
   const validConsumptions = refuelings
     .map((r) => r.consumptionKmPerLiter)
     .filter((c): c is number => typeof c === 'number' && c > 0 && c < 50);
-  const avgConsumption =
+  const listAvgConsumption =
     validConsumptions.length > 0
       ? (validConsumptions.reduce((a, b) => a + b, 0) / validConsumptions.length).toFixed(2)
       : null;
+  const avgConsumption =
+    vehicle?.mediaGeralKmPorLitro &&
+    vehicle.mediaGeralKmPorLitro > 0 &&
+    (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
+      ? vehicle.mediaGeralKmPorLitro.toFixed(2)
+      : listAvgConsumption;
 
   // Combustíveis aceitos pelo veículo (limita no cadastro)
   const availableFuels: FuelType[] =

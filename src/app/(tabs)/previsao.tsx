@@ -52,6 +52,41 @@ export default function ForecastScreen() {
     else setLoading(true);
 
     try {
+      // 1. Exibe imediatamente os dados do cache local do aparelho
+      const [cachedVehicles, cachedActiveId, cachedRefs, cachedMnts] = await Promise.all([
+        StorageService.getCachedVehicles(),
+        StorageService.getActiveVehicleId(),
+        StorageService.getCachedRefuelings(),
+        StorageService.getCachedMaintenances(),
+      ]);
+      if (cachedVehicles.length > 0) {
+        setVehicles(cachedVehicles);
+        setAllRefuelings(cachedRefs);
+        setAllMaintenances(cachedMnts);
+        let cachedTargetId = selectedVehicleId;
+        if (cachedTargetId !== 'all' && !cachedVehicles.some((v) => v.id === cachedTargetId)) {
+          cachedTargetId = cachedActiveId || 'all';
+        } else if (!cachedTargetId) {
+          cachedTargetId = cachedActiveId || 'all';
+        }
+        setSelectedVehicleId(cachedTargetId);
+        if (cachedTargetId !== 'all') {
+          const found = cachedVehicles.find((v) => v.id === cachedTargetId) || null;
+          setVehicle(found);
+          setRefuelings(cachedRefs.filter((r) => r.vehicleId === cachedTargetId));
+          setMaintenances(cachedMnts.filter((m) => m.vehicleId === cachedTargetId));
+          if (found?.flexEfficiencyRatio) {
+            setCustomRatio(String(Math.round(found.flexEfficiencyRatio * 100)));
+          }
+        } else {
+          setVehicle(null);
+          setRefuelings(cachedRefs);
+          setMaintenances(cachedMnts);
+        }
+        setLoading(false);
+      }
+
+      // 2. Sincroniza / atualiza com preservação offline
       const [vehiclesList, curActiveId, allRefs, allMnts, fuelPrices] = await Promise.all([
         StorageService.getVehicles(),
         StorageService.getActiveVehicleId(),

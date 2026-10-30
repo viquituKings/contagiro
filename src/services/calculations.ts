@@ -1,20 +1,66 @@
-import { Vehicle, Refueling, MaintenanceItem, MaintenanceAlert, FuelForecast, FuelPrices } from '@/types/vehicle';
+import {
+  Vehicle,
+  Refueling,
+  MaintenanceItem,
+  MaintenanceAlert,
+  FuelForecast,
+  FuelPrices,
+} from '@/types/vehicle';
 
 export const Calculations = {
-  // Estatísticas Gerais do Veículo
+  // Estatísticas Gerais do Veículo (compatível com cache offline dos 5 últimos registros + totalizadores persistidos)
   getVehicleStats(vehicle: Vehicle, refuelings: Refueling[], maintenances: MaintenanceItem[]) {
-    const totalFuelSpent = refuelings.reduce((acc, r) => acc + r.totalAmount, 0);
-    const totalMaintenanceSpent = maintenances.reduce((acc, m) => acc + m.cost, 0);
-    const totalSpent = totalFuelSpent + totalMaintenanceSpent;
+    const listFuelSpent = refuelings.reduce((acc, r) => acc + Number(r.totalAmount || 0), 0);
+    const listMaintenanceSpent = maintenances.reduce((acc, m) => acc + Number(m.cost || 0), 0);
+    const listLiters = refuelings.reduce((acc, r) => acc + Number(r.liters || 0), 0);
+
+    const hasPersistedFuelTotals =
+      vehicle?.totalGastoAbast != null &&
+      (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length &&
+      vehicle.totalGastoAbast >= listFuelSpent;
+
+    const hasPersistedMntTotals =
+      vehicle?.gastoManutencao != null &&
+      (vehicle.qtdManutencoes ?? 0) >= maintenances.length &&
+      vehicle.gastoManutencao >= listMaintenanceSpent;
+
+    const totalFuelSpent = hasPersistedFuelTotals
+      ? Number(vehicle.totalGastoAbast)
+      : Number(listFuelSpent.toFixed(2));
+
+    const totalLiters =
+      vehicle?.totalLitrosAbast != null && (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
+        ? Number(vehicle.totalLitrosAbast)
+        : Number(listLiters.toFixed(2));
+
+    const totalMaintenanceSpent = hasPersistedMntTotals
+      ? Number(vehicle.gastoManutencao)
+      : Number(listMaintenanceSpent.toFixed(2));
+
+    const totalSpent = Number((totalFuelSpent + totalMaintenanceSpent).toFixed(2));
 
     const validConsumptions = refuelings
       .map((r) => r.consumptionKmPerLiter)
       .filter((c): c is number => typeof c === 'number' && c > 0 && c < 50);
 
-    const averageConsumption =
+    const listAvgConsumption =
       validConsumptions.length > 0
-        ? Number((validConsumptions.reduce((a, b) => a + b, 0) / validConsumptions.length).toFixed(2))
-        : 12.0;
+        ? Number(
+            (validConsumptions.reduce((a, b) => a + b, 0) / validConsumptions.length).toFixed(2)
+          )
+        : 0;
+
+    const isMoto = vehicle?.vehicleType === 'moto';
+    const defaultConsumption = isMoto ? 35.0 : 12.0;
+
+    const averageConsumption =
+      vehicle?.mediaGeralKmPorLitro &&
+      vehicle.mediaGeralKmPorLitro > 0 &&
+      (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
+        ? Number(vehicle.mediaGeralKmPorLitro)
+        : listAvgConsumption > 0
+        ? listAvgConsumption
+        : defaultConsumption;
 
     const bestConsumption = validConsumptions.length > 0 ? Math.max(...validConsumptions) : null;
     const worstConsumption = validConsumptions.length > 0 ? Math.min(...validConsumptions) : null;
@@ -23,21 +69,31 @@ export const Calculations = {
       .map((r) => r.costPerKm)
       .filter((c): c is number => typeof c === 'number' && c > 0);
 
-    const averageCostPerKm =
+    const listAvgCostPerKm =
       validCostsPerKm.length > 0
         ? Number((validCostsPerKm.reduce((a, b) => a + b, 0) / validCostsPerKm.length).toFixed(2))
+        : 0;
+
+    const averageCostPerKm =
+      vehicle?.custoMedioPorKm &&
+      vehicle.custoMedioPorKm > 0 &&
+      (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
+        ? Number(vehicle.custoMedioPorKm)
+        : listAvgCostPerKm > 0
+        ? listAvgCostPerKm
         : 0.48;
 
     return {
       totalSpent,
       totalFuelSpent,
+      totalLiters,
       totalMaintenanceSpent,
       averageConsumption,
       bestConsumption,
       worstConsumption,
       averageCostPerKm,
-      refuelingsCount: refuelings.length,
-      maintenancesCount: maintenances.length,
+      refuelingsCount: Math.max(vehicle?.qtdAbastecimentos ?? 0, refuelings.length),
+      maintenancesCount: Math.max(vehicle?.qtdManutencoes ?? 0, maintenances.length),
     };
   },
 
@@ -49,7 +105,6 @@ export const Calculations = {
   ): MaintenanceAlert[] {
     const isMoto = vehicle?.vehicleType === 'moto';
 
-    // Regras de recomendação automotiva com periodicidade configurada
     const standardCategories: {
       category: MaintenanceItem['category'];
       title: string;
@@ -58,7 +113,6 @@ export const Calculations = {
       overrideDueKm?: number;
     }[] = [];
 
-    // 1. Óleo e Filtro (respeita configuração periódica do veículo se houver)
     const oilInterval = vehicle?.trocaOleoKm || (isMoto ? 3000 : 10000);
     standardCategories.push({
       category: 'oleo_filtro',
@@ -68,7 +122,6 @@ export const Calculations = {
       overrideDueKm: vehicle?.proxTrocaOleoKm,
     });
 
-    // 2. Revisão Geral (respeita configuração periódica do veículo se houver)
     const revInterval = vehicle?.revisaoKm || (isMoto ? 6000 : 10000);
     standardCategories.push({
       category: 'revisao_geral',
@@ -79,7 +132,6 @@ export const Calculations = {
     });
 
     if (isMoto) {
-      // Categorias periódicas exclusivas de Motocicletas (com base na configuração do veículo)
       const lubInterval = vehicle?.lubrificarCorrenteKm || 500;
       standardCategories.push({
         category: 'lubrificar_corrente',
@@ -98,11 +150,25 @@ export const Calculations = {
         overrideDueKm: vehicle?.proxEsticarCorrenteKm,
       });
     } else {
-      // Categorias periódicas de Automóveis
       standardCategories.push(
-        { category: 'alinhamento_balanceamento', title: 'Alinhamento & Balanceamento', intervalKm: 10000, estimatedCost: 150 },
-        { category: 'rodizio_pneus', title: 'Rodízio de Pneus', intervalKm: 10000, estimatedCost: 80 },
-        { category: 'ar_condicionado', title: 'Higienização e Filtro de Ar', intervalKm: 15000, estimatedCost: 120 }
+        {
+          category: 'alinhamento_balanceamento',
+          title: 'Alinhamento & Balanceamento',
+          intervalKm: 10000,
+          estimatedCost: 150,
+        },
+        {
+          category: 'rodizio_pneus',
+          title: 'Rodízio de Pneus',
+          intervalKm: 10000,
+          estimatedCost: 80,
+        },
+        {
+          category: 'ar_condicionado',
+          title: 'Higienização e Filtro de Ar',
+          intervalKm: 15000,
+          estimatedCost: 120,
+        }
       );
     }
 
@@ -114,9 +180,13 @@ export const Calculations = {
       if (std.overrideDueKm && std.overrideDueKm > 0) {
         dueKm = std.overrideDueKm;
       } else {
-        // Procurar a última manutenção concluída desta categoria
         const last = maintenances
-          .filter((m) => (m.category === std.category || (std.category === 'troca_pneus' && m.category === 'pneus')) && m.isCompleted)
+          .filter(
+            (m) =>
+              (m.category === std.category ||
+                (std.category === 'troca_pneus' && m.category === 'pneus')) &&
+              m.isCompleted
+          )
           .sort((a, b) => b.odometer - a.odometer)[0];
 
         if (last?.nextDueOdometer) {
@@ -131,11 +201,6 @@ export const Calculations = {
       const kmRemaining = dueKm - currentKm;
       let status: MaintenanceAlert['status'] = 'ok';
 
-      // Limiares baseados na quilometragem periódica cadastrada (std.intervalKm):
-      // - Vencido / Atrasado: kmRemaining <= 0 (vermelho)
-      // - Alerta: faltam 15% ou menos da quilometragem periódica cadastrada (ex: <= 150 km em ciclo de 1000 km) -> vermelho
-      // - Atenção: faltam 30% ou menos da quilometragem periódica cadastrada (ex: <= 300 km em ciclo de 1000 km) -> amarelo
-      // - Em dia: faltam mais de 30% da quilometragem periódica cadastrada -> verde
       const alertThreshold = std.intervalKm * 0.15;
       const warningThreshold = std.intervalKm * 0.30;
 
@@ -160,24 +225,59 @@ export const Calculations = {
       });
     });
 
-    // Ordenar: primeiro vencidos (0), depois alerta 15% (1), atenção 30% (2), depois em dia (3)
-    const order: Record<string, number> = { vencido: 0, alerta: 1, atencao: 2, proximo: 2, ok: 3 };
+    const order: Record<string, number> = {
+      vencido: 0,
+      alerta: 1,
+      atencao: 2,
+      proximo: 2,
+      ok: 3,
+    };
     return alerts.sort(
-      (a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || (a.kmRemaining ?? 0) - (b.kmRemaining ?? 0)
+      (a, b) =>
+        (order[a.status] ?? 3) - (order[b.status] ?? 3) ||
+        (a.kmRemaining ?? 0) - (b.kmRemaining ?? 0)
     );
   },
 
   // Monitoramento de Itens por Desgaste (sem período rígido, exibindo última substituição)
-  getWearItemsStatus(currentKm: number, maintenances: MaintenanceItem[]) {
-    // 1. Pastilhas / Lonas de freio
+  getWearItemsStatus(
+    currentKm: number,
+    maintenances: MaintenanceItem[],
+    vehicle?: Vehicle | null
+  ) {
     const lastBrake = maintenances
       .filter((m) => m.category === 'freios' && m.isCompleted)
       .sort((a, b) => b.odometer - a.odometer)[0];
 
-    // 2. Troca de Pneus
     const lastTire = maintenances
       .filter((m) => (m.category === 'troca_pneus' || m.category === 'pneus') && m.isCompleted)
       .sort((a, b) => b.odometer - a.odometer)[0];
+
+    let brakeFallback: {
+      odometer: number;
+      date: string;
+      side: string;
+      kmAgo: number;
+    } | null = null;
+
+    if (!lastBrake && vehicle) {
+      const diantKm = vehicle.manFreioDiant || 0;
+      const trasKm = vehicle.manFreioTras || 0;
+      const maxBrakeKm = Math.max(diantKm, trasKm);
+      if (maxBrakeKm > 0) {
+        brakeFallback = {
+          odometer: maxBrakeKm,
+          date: '',
+          side:
+            diantKm > 0 && trasKm > 0 && diantKm === trasKm
+              ? 'Dianteiro e Traseiro'
+              : diantKm >= trasKm
+              ? 'Dianteiro'
+              : 'Traseiro',
+          kmAgo: Math.max(0, currentKm - maxBrakeKm),
+        };
+      }
+    }
 
     return {
       brake: lastBrake
@@ -187,7 +287,7 @@ export const Calculations = {
             side: lastBrake.sideLabel || lastBrake.side || 'Geral',
             kmAgo: Math.max(0, currentKm - lastBrake.odometer),
           }
-        : null,
+        : brakeFallback,
       tire: lastTire
         ? {
             odometer: lastTire.odometer,
@@ -207,9 +307,8 @@ export const Calculations = {
     latestFuelPrices?: FuelPrices
   ): FuelForecast {
     const isMoto = vehicle?.vehicleType === 'moto';
-    let averageDailyKm = isMoto ? 25 : 30; // fallback padrão inicial caso não haja histórico suficiente
+    let averageDailyKm = isMoto ? 25 : 30;
 
-    // Timeline cronológica com todos os registros de odômetro disponíveis
     const timeline: { date: Date; odometer: number }[] = [];
 
     refuelings.forEach((r) => {
@@ -226,7 +325,6 @@ export const Calculations = {
       }
     });
 
-    // Ordenar timeline por data
     timeline.sort((a, b) => a.date.getTime() - b.date.getTime());
 
     if (timeline.length >= 2) {
@@ -237,11 +335,9 @@ export const Calculations = {
       const diffKm = Math.max(0, last.odometer - first.odometer);
 
       if (diffDays > 0 && diffKm > 0) {
-        // Cálculo dinâmico: km rodados divididos pelos dias corridos entre os registros
         averageDailyKm = Math.min(1000, Math.max(1, Math.round(diffKm / diffDays)));
       }
     } else if (timeline.length === 1 && vehicle.currentOdometer > timeline[0].odometer) {
-      // Caso haja 1 registro no passado e o odômetro atual do veículo tenha avançado
       const first = timeline[0];
       const diffMs = Date.now() - first.date.getTime();
       const diffDays = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
@@ -259,11 +355,12 @@ export const Calculations = {
         : vehicle?.mediaGeralKmPorLitro && vehicle.mediaGeralKmPorLitro > 0
         ? vehicle.mediaGeralKmPorLitro
         : defaultConsumption;
-    
-    // Preço do combustível: prioriza o preço mais recente praticado no sistema para o combustível do veículo
+
     const prices = refuelings.map((r) => r.pricePerLiter).filter((p) => p > 0);
     const vehicleFuel = vehicle?.fuelType || 'gasolina';
-    const latestPriceForFuel = latestFuelPrices ? latestFuelPrices[vehicleFuel] || latestFuelPrices.gasolina : undefined;
+    const latestPriceForFuel = latestFuelPrices
+      ? latestFuelPrices[vehicleFuel] || latestFuelPrices.gasolina
+      : undefined;
 
     const averagePricePerLiter =
       latestPriceForFuel && latestPriceForFuel > 0
@@ -279,13 +376,19 @@ export const Calculations = {
     const projected60DaysCost = Number((projected30DaysCost * 2).toFixed(2));
     const projected90DaysCost = Number((projected30DaysCost * 3).toFixed(2));
 
-    // Manutenções com previsão de vencer nos próximos 30 dias (ou seja, dentro dos próximos km)
     const alerts = this.getMaintenanceAlerts(vehicle.currentOdometer, maintenances, vehicle);
     const upcomingMaintenancesCost30Days = alerts
-      .filter((a) => (a.status === 'vencido' || a.status === 'alerta' || (a.kmRemaining !== undefined && a.kmRemaining <= projected30DaysKm)))
+      .filter(
+        (a) =>
+          a.status === 'vencido' ||
+          a.status === 'alerta' ||
+          (a.kmRemaining !== undefined && a.kmRemaining <= projected30DaysKm)
+      )
       .reduce((sum, a) => sum + a.estimatedCost, 0);
 
-    const totalProjectedCost30Days = Number((projected30DaysCost + upcomingMaintenancesCost30Days).toFixed(2));
+    const totalProjectedCost30Days = Number(
+      (projected30DaysCost + upcomingMaintenancesCost30Days).toFixed(2)
+    );
 
     return {
       averageDailyKm,
@@ -343,9 +446,7 @@ export const Calculations = {
         : 5.89;
 
     const avgConsumption =
-      vehicles.length > 0
-        ? Number((weightedConsumptionSum / vehicles.length).toFixed(2))
-        : 12.0;
+      vehicles.length > 0 ? Number((weightedConsumptionSum / vehicles.length).toFixed(2)) : 12.0;
 
     const avgCostPerKm =
       totalProjected30DaysKm > 0
@@ -362,13 +463,20 @@ export const Calculations = {
       projected60DaysCost: Number(totalProjected60DaysCost.toFixed(2)),
       projected90DaysCost: Number(totalProjected90DaysCost.toFixed(2)),
       upcomingMaintenancesCost30Days: Number(totalUpcomingMntCost.toFixed(2)),
-      totalProjectedCost30Days: Number((totalProjected30DaysCost + totalUpcomingMntCost).toFixed(2)),
+      totalProjectedCost30Days: Number(
+        (totalProjected30DaysCost + totalUpcomingMntCost).toFixed(2)
+      ),
       vehicleBreakdowns: breakdowns,
     };
   },
 
   // Calculadora Flex (Etanol vs Gasolina)
-  calculateFlex(gasolinePrice: number, ethanolPrice: number, vehicleRatio = 0.70, tankCapacity = 45) {
+  calculateFlex(
+    gasolinePrice: number,
+    ethanolPrice: number,
+    vehicleRatio = 0.70,
+    tankCapacity = 45
+  ) {
     if (gasolinePrice <= 0 || ethanolPrice <= 0) {
       return {
         ratio: 0,
@@ -380,9 +488,9 @@ export const Calculations = {
     }
 
     const currentRatio = ethanolPrice / gasolinePrice;
-    const recommendation = currentRatio <= vehicleRatio ? ('etanol' as const) : ('gasolina' as const);
+    const recommendation =
+      currentRatio <= vehicleRatio ? ('etanol' as const) : ('gasolina' as const);
 
-    // Economia estimada no tanque completo
     let savingsFullTank = 0;
     if (recommendation === 'etanol') {
       const equivGasolineCost = tankCapacity * gasolinePrice;

@@ -142,7 +142,10 @@ export const NotificationService = {
     try {
       const scheduled = await Notifications.getAllScheduledNotificationsAsync();
       for (const item of scheduled) {
-        if (item.identifier.startsWith('maint-') || item.content.data?.type === 'maintenance_alert') {
+        if (
+          item.identifier.startsWith('maint-') ||
+          item.content.data?.type === 'maintenance_alert'
+        ) {
           await Notifications.cancelScheduledNotificationAsync(item.identifier);
         }
       }
@@ -159,7 +162,15 @@ export const NotificationService = {
     const now = new Date();
 
     for (let i = 0; i <= count + 1; i++) {
-      const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (i * intervalDays), 7, 0, 0, 0);
+      const target = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + i * intervalDays,
+        7,
+        0,
+        0,
+        0
+      );
       if (target.getTime() > now.getTime()) {
         dates.push(target);
       }
@@ -172,7 +183,7 @@ export const NotificationService = {
   },
 
   /**
-   * Varre todos os veículos e manutenções do app e agenda as notificações conforme a regra:
+   * Varre todos os veículos e manutenções do cache local e agenda as notificações conforme a regra:
    * - Alerta: a cada 3 dias às 7h da manhã
    * - Atenção: a cada 7 dias às 7h da manhã
    */
@@ -187,25 +198,27 @@ export const NotificationService = {
       // 1. Limpa agendamentos anteriores para evitar duplicidades
       await this.cancelAllMaintenanceNotifications();
 
-      // 2. Obtém veículos e manutenções
-      const vehicles = await StorageService.getVehicles();
+      // 2. Obtém veículos e manutenções diretamente do cache local (sem atrasos de rede)
+      const vehicles = await StorageService.getCachedVehicles();
       if (vehicles.length === 0) return 0;
 
       let scheduledCount = 0;
 
       for (const vehicle of vehicles) {
-        const maintenances = await StorageService.getMaintenances(vehicle.id);
-        const alerts = Calculations.getMaintenanceAlerts(vehicle.currentOdometer, maintenances, vehicle);
+        const maintenances = await StorageService.getCachedMaintenances(vehicle.id);
+        const alerts = Calculations.getMaintenanceAlerts(
+          vehicle.currentOdometer,
+          maintenances,
+          vehicle
+        );
 
         for (const alert of alerts) {
-          // Manutenções em ALERTA (ou vencidas)
           if (alert.status === 'alerta' || alert.status === 'vencido') {
             const kmRestante = Math.max(0, Math.round(alert.kmRemaining ?? 0));
             const kmFormatado = kmRestante.toLocaleString('pt-BR');
             const title = 'Alerta de manutenção';
             const body = `Faltam ${kmFormatado} km para ${alert.title}`;
 
-            // A cada 3 dias às 7h da manhã (próximos ciclos)
             const targetDates = this.getNextDatesAt7AM(3, 10);
 
             for (let idx = 0; idx < targetDates.length; idx++) {
@@ -233,15 +246,12 @@ export const NotificationService = {
               });
               scheduledCount++;
             }
-          }
-          // Manutenções em ATENÇÃO
-          else if (alert.status === 'atencao' || alert.status === 'proximo') {
+          } else if (alert.status === 'atencao' || alert.status === 'proximo') {
             const kmRestante = Math.max(0, Math.round(alert.kmRemaining ?? 0));
             const kmFormatado = kmRestante.toLocaleString('pt-BR');
             const title = 'Lembrete de manutenção';
             const body = `Faltam ${kmFormatado} km para ${alert.title}`;
 
-            // A cada 7 dias às 7h da manhã (próximos ciclos)
             const targetDates = this.getNextDatesAt7AM(7, 6);
 
             for (let idx = 0; idx < targetDates.length; idx++) {
@@ -292,18 +302,20 @@ export const NotificationService = {
     await this.setupAndroidChannel();
 
     const title = type === 'alerta' ? 'Alerta de manutenção' : 'Lembrete de manutenção';
-    const body = type === 'alerta'
-      ? 'Faltam 150 km para Troca de Óleo + Filtros'
-      : 'Faltam 800 km para Revisão Periódica';
+    const body =
+      type === 'alerta'
+        ? 'Faltam 150 km para Troca de Óleo + Filtros'
+        : 'Faltam 800 km para Revisão Periódica';
 
     await Notifications.scheduleNotificationAsync({
       content: {
         title,
         body,
         sound: 'default',
-        priority: type === 'alerta'
-          ? AndroidNotificationPriority.HIGH
-          : AndroidNotificationPriority.DEFAULT,
+        priority:
+          type === 'alerta'
+            ? AndroidNotificationPriority.HIGH
+            : AndroidNotificationPriority.DEFAULT,
         data: { test: true },
       },
       trigger: {

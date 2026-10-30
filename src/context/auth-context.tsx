@@ -19,8 +19,14 @@ import {
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { ref, uploadBytes, uploadString, getDownloadURL } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { auth, db, storage } from '@/services/firebase';
+import { auth, db, storage, checkOnlineStatus, withFirestoreTimeout } from '@/services/firebase';
 import { StorageService } from '@/services/storage';
+import { SyncService } from '@/services/sync-service';
+import {
+  ensureOfflineCachedImage,
+  saveAvatarToLocalCache,
+  getAvatarCacheMap,
+} from '@/services/image-picker';
 
 /**
  * Verifica de forma totalmente segura se o módulo nativo RNGoogleSignin está registrado
@@ -68,36 +74,43 @@ function isValidAuthPhotoUrl(url?: string | null): boolean {
 }
 
 /**
- * Tenta fazer o upload da imagem para o Firebase Cloud Storage.
+ * Tenta fazer o upload da imagem para o Firebase Cloud Storage com timeout curto.
  * Se o bucket estiver configurado e o upload tiver sucesso, retorna a URL pública HTTP(S) curta.
- * Se o Storage não estiver configurado ou falhar, retorna a Base64 original como fallback seguro,
- * permitindo que seja armazenada no Firestore sem interromper a experiência do usuário.
+ * Se estiver offline ou o Storage falhar, retorna a Base64 original como fallback seguro.
  */
-async function uploadUserAvatarToStorage(userEmail: string, photoUriOrBase64: string): Promise<string> {
+async function uploadUserAvatarToStorage(
+  userEmail: string,
+  photoUriOrBase64: string
+): Promise<string> {
   if (isValidAuthPhotoUrl(photoUriOrBase64)) {
+    return photoUriOrBase64;
+  }
+
+  const online = await checkOnlineStatus();
+  if (!online) {
     return photoUriOrBase64;
   }
 
   try {
     const storageRef = ref(storage, `users/${userEmail.toLowerCase().trim()}/avatar.jpg`);
 
-    if (photoUriOrBase64.startsWith('data:')) {
-      // Data URLs devem ser enviadas com uploadString('data_url'), pois fetch('data:...')
-      // é rejeitado pela stack nativa do Android (java.net.MalformedURLException: unknown protocol: data)
-      await uploadString(storageRef, photoUriOrBase64, 'data_url');
-    } else {
-      const response = await fetch(photoUriOrBase64);
-      const blob = await response.blob();
-      await uploadBytes(storageRef, blob, {
-        contentType: 'image/jpeg',
-      });
-    }
+    const downloadUrl = await withFirestoreTimeout(async () => {
+      if (photoUriOrBase64.startsWith('data:')) {
+        await uploadString(storageRef, photoUriOrBase64, 'data_url');
+      } else {
+        const response = await fetch(photoUriOrBase64);
+        const blob = await response.blob();
+        await uploadBytes(storageRef, blob, {
+          contentType: 'image/jpeg',
+        });
+      }
+      return await getDownloadURL(storageRef);
+    }, 3000);
 
-    const downloadUrl = await getDownloadURL(storageRef);
     return downloadUrl;
   } catch (error) {
     console.warn(
-      'Aviso: Upload para Firebase Storage não disponível. Salvando foto otimizada no Firestore:',
+      'Aviso: Upload para Firebase Storage indisponível/offline. Salvando foto otimizada localmente:',
       error
     );
     return photoUriOrBase64;
@@ -105,22 +118,44 @@ async function uploadUserAvatarToStorage(userEmail: string, photoUriOrBase64: st
 }
 
 /**
- * Salva o perfil e a foto customizada do usuário no Firestore e no cache local AsyncStorage.
+ * Salva o perfil e a foto customizada do usuário no Firestore e no cache local AsyncStorage
+ * (sempre mantendo a versão Base64 em cache para exibição offline garantida).
  */
 async function saveUserProfileToFirestoreAndCache(
   email: string,
-  profile: { displayName?: string; photoUrl?: string | null }
-) {
+  profile: { displayName?: string; photoUrl?: string | null; photoBase64?: string | null }
+): Promise<boolean> {
   const emailKey = email.toLowerCase().trim();
   const cacheKey = `@contagiro:user_profile_${emailKey}`;
 
-  // 1. Grava no cache AsyncStorage para exibição offline e carregamento instantâneo
+  // 1. Garante que a imagem de perfil esteja salva em Base64 no cache de avatares
+  let offlinePhotoUri = profile.photoBase64 ?? profile.photoUrl;
+  if (offlinePhotoUri) {
+    const cachedImg = await ensureOfflineCachedImage(`user_${emailKey}`, offlinePhotoUri);
+    if (cachedImg) {
+      offlinePhotoUri = cachedImg;
+    }
+  } else if (profile.photoUrl === null) {
+    await saveAvatarToLocalCache(`user_${emailKey}`, null);
+    offlinePhotoUri = null;
+  }
+
+  // 2. Grava no cache AsyncStorage para exibição offline e carregamento instantâneo
   try {
     const cached = await AsyncStorage.getItem(cacheKey);
     const existing = cached ? JSON.parse(cached) : {};
     const updated = {
       ...existing,
-      ...profile,
+      displayName:
+        profile.displayName !== undefined ? profile.displayName : existing.displayName,
+      photoUrl:
+        offlinePhotoUri !== undefined
+          ? offlinePhotoUri
+          : profile.photoUrl !== undefined
+          ? profile.photoUrl
+          : existing.photoUrl,
+      remotePhotoUrl:
+        profile.photoUrl !== undefined ? profile.photoUrl : existing.remotePhotoUrl,
       email: emailKey,
     };
     await AsyncStorage.setItem(cacheKey, JSON.stringify(updated));
@@ -128,7 +163,7 @@ async function saveUserProfileToFirestoreAndCache(
     console.warn('Erro ao salvar perfil no cache local:', err);
   }
 
-  // 2. Grava no documento do usuário no Firestore
+  // 3. Grava no documento do usuário no Firestore com timeout curto
   try {
     const userDocRef = doc(db, 'users', emailKey);
     const firestoreData: Record<string, unknown> = {
@@ -140,9 +175,16 @@ async function saveUserProfileToFirestoreAndCache(
     if (profile.photoUrl !== undefined) {
       firestoreData.photoUrl = profile.photoUrl;
     }
-    await setDoc(userDocRef, firestoreData, { merge: true });
+    await withFirestoreTimeout(() => setDoc(userDocRef, firestoreData, { merge: true }), 1500);
+    await SyncService.removeByEntityId(emailKey);
+    return true;
   } catch (err) {
-    console.warn('Erro ao salvar perfil no Firestore:', err);
+    console.warn('Offline: Perfil salvo localmente e enfileirado para sincronização:', err);
+    await SyncService.enqueue('SAVE_USER_PROFILE', emailKey, {
+      displayName: profile.displayName,
+      photoUrl: offlinePhotoUri !== undefined ? offlinePhotoUri : profile.photoUrl,
+    });
+    return false;
   }
 }
 
@@ -150,7 +192,12 @@ interface AuthContextData {
   user: User | null;
   loading: boolean;
   loginWithEmail: (email: string, pass: string) => Promise<void>;
-  registerWithEmail: (email: string, pass: string, name: string, photoUrl?: string) => Promise<void>;
+  registerWithEmail: (
+    email: string,
+    pass: string,
+    name: string,
+    photoUrl?: string
+  ) => Promise<void>;
   updateUserProfile: (data: { displayName?: string; photoUrl?: string | null }) => Promise<void>;
   changePassword: (newPassword: string, currentPassword?: string) => Promise<void>;
   loginWithGoogle: () => Promise<boolean | void>;
@@ -183,7 +230,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [googleWebClientId]);
 
-  // Monitora alterações no estado de autenticação do Firebase e sincroniza foto de perfil
+  // Monitora alterações no estado de autenticação do Firebase e sincroniza foto de perfil e cache offline
   useEffect(() => {
     let isMounted = true;
 
@@ -193,14 +240,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (currentUser && currentUser.email) {
         const emailKey = currentUser.email.toLowerCase().trim();
         let customPhoto = currentUser.photoURL;
+        let customName = currentUser.displayName;
 
-        // 1. Carrega do AsyncStorage imediatamente para evitar atraso visual na interface
+        // 1. Carrega do AsyncStorage e do cache de avatares imediatamente para funcionamento 100% offline
         try {
+          const avatarMap = await getAvatarCacheMap();
+          if (avatarMap[`user_${emailKey}`]) {
+            customPhoto = avatarMap[`user_${emailKey}`];
+          }
+
           const cachedProfile = await AsyncStorage.getItem(`@contagiro:user_profile_${emailKey}`);
           if (cachedProfile) {
             const parsed = JSON.parse(cachedProfile);
-            if (parsed.photoUrl !== undefined) {
+            if (parsed.photoUrl !== undefined && !avatarMap[`user_${emailKey}`]) {
               customPhoto = parsed.photoUrl;
+            }
+            if (parsed.displayName) {
+              customName = parsed.displayName;
             }
           }
         } catch (e) {
@@ -210,30 +266,86 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (isMounted) {
           setUser({
             ...currentUser,
+            displayName: customName,
             photoURL: customPhoto,
           });
           setLoading(false);
         }
 
-        // 2. Sincroniza com o Firestore em background
+        // 2. Pré-carrega os dados offline (veículos, avatares, totalizadores, 5 últimos abastecimentos e manutenções)
+        StorageService.preloadOfflineData().catch((err) => {
+          console.warn('Aviso ao pré-carregar dados offline no login:', err);
+        });
+
+        // 3. Sincroniza perfil com o Firestore em background (sem sobrepor alterações feitas offline!)
         try {
-          const userDoc = await getDoc(doc(db, 'users', emailKey));
-          if (userDoc.exists() && isMounted) {
-            const data = userDoc.data();
-            if (data?.photoUrl !== undefined && data.photoUrl !== customPhoto) {
-              setUser((prev) => (prev ? { ...prev, photoURL: data.photoUrl } : prev));
+          const queue = await SyncService.getQueue();
+          const hasPendingProfile = queue.some(
+            (q) => q.action === 'SAVE_USER_PROFILE' && q.userEmail === emailKey
+          );
+
+          if (!hasPendingProfile) {
+            const userDoc = await withFirestoreTimeout(
+              () => getDoc(doc(db, 'users', emailKey)),
+              1500
+            );
+            if (userDoc.exists() && isMounted) {
+              const data = userDoc.data();
+              const remotePhoto =
+                data?.photoUrl !== undefined ? data.photoUrl : currentUser.photoURL;
+              const remoteName = data?.displayName || customName;
+
+              let localReadyPhoto = remotePhoto;
+              if (remotePhoto) {
+                const cachedBase64 = await ensureOfflineCachedImage(
+                  `user_${emailKey}`,
+                  remotePhoto
+                );
+                if (cachedBase64) {
+                  localReadyPhoto = cachedBase64;
+                }
+              }
+
+              if (isMounted) {
+                setUser((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        displayName: remoteName,
+                        photoURL: localReadyPhoto,
+                      }
+                    : prev
+                );
+              }
+
               await AsyncStorage.setItem(
                 `@contagiro:user_profile_${emailKey}`,
                 JSON.stringify({
-                  displayName: data.displayName || currentUser.displayName,
+                  displayName: remoteName,
                   email: emailKey,
-                  photoUrl: data.photoUrl,
+                  photoUrl: localReadyPhoto,
+                  remotePhotoUrl: remotePhoto,
                 })
               );
+            } else if (customPhoto && customPhoto.startsWith('http')) {
+              // Se veio foto do Google Auth e ainda não estava no Firestore, salva em Base64 no cache local
+              const cachedBase64 = await ensureOfflineCachedImage(`user_${emailKey}`, customPhoto);
+              if (cachedBase64 && isMounted) {
+                setUser((prev) => (prev ? { ...prev, photoURL: cachedBase64 } : prev));
+                await AsyncStorage.setItem(
+                  `@contagiro:user_profile_${emailKey}`,
+                  JSON.stringify({
+                    displayName: customName,
+                    email: emailKey,
+                    photoUrl: cachedBase64,
+                    remotePhotoUrl: customPhoto,
+                  })
+                );
+              }
             }
           }
-        } catch (e) {
-          console.warn('Erro ao sincronizar perfil do Firestore:', e);
+        } catch {
+          // Offline: mantém os dados do cache local
         }
       } else {
         if (isMounted) {
@@ -253,41 +365,59 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await signInWithEmailAndPassword(auth, email.trim(), pass);
   };
 
-  const registerWithEmail = async (email: string, pass: string, name: string, photoUrl?: string) => {
+  const registerWithEmail = async (
+    email: string,
+    pass: string,
+    name: string,
+    photoUrl?: string
+  ) => {
     const trimmedEmail = email.trim();
     const trimmedName = name.trim();
     const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, pass);
 
     if (cred.user) {
       let finalPhotoUrl = photoUrl;
+      let localBase64Photo = photoUrl;
 
-      // Se houver foto, tenta enviar para o Firebase Storage
       if (photoUrl) {
+        const cached = await ensureOfflineCachedImage(`user_${trimmedEmail}`, photoUrl);
+        if (cached) localBase64Photo = cached;
         finalPhotoUrl = await uploadUserAvatarToStorage(trimmedEmail, photoUrl);
       }
 
-      // Atualiza o Firebase Auth SOMENTE com photoURL se for uma URL válida (< 2048 caracteres).
-      if (finalPhotoUrl && isValidAuthPhotoUrl(finalPhotoUrl)) {
-        await updateProfile(cred.user, {
-          displayName: trimmedName,
-          photoURL: finalPhotoUrl,
-        });
-      } else {
-        await updateProfile(cred.user, {
-          displayName: trimmedName,
-        });
+      try {
+        if (finalPhotoUrl && isValidAuthPhotoUrl(finalPhotoUrl)) {
+          await withFirestoreTimeout(
+            () =>
+              updateProfile(cred.user, {
+                displayName: trimmedName,
+                photoURL: finalPhotoUrl,
+              }),
+            2000
+          );
+        } else {
+          await withFirestoreTimeout(
+            () =>
+              updateProfile(cred.user, {
+                displayName: trimmedName,
+              }),
+            2000
+          );
+        }
+      } catch (e) {
+        console.warn('Aviso ao atualizar Auth profile durante cadastro:', e);
       }
 
-      // Salva dados no Firestore e AsyncStorage (que aceitam Base64 sem limite restrito)
       await saveUserProfileToFirestoreAndCache(trimmedEmail, {
         displayName: trimmedName,
         photoUrl: finalPhotoUrl || null,
+        photoBase64: localBase64Photo || null,
       });
 
       setUser({
         ...cred.user,
         displayName: trimmedName,
-        photoURL: finalPhotoUrl || null,
+        photoURL: localBase64Photo || finalPhotoUrl || null,
       });
     }
   };
@@ -297,8 +427,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const currentUser = auth.currentUser;
     const userEmail = currentUser.email || '';
 
-    let finalPhotoUrl = data.photoUrl;
+    // Impede remoção de foto de perfil do banco de dados quando offline
+    if (data.photoUrl === null) {
+      const online = await checkOnlineStatus(true);
+      if (!online) {
+        throw new Error(
+          'Não é possível remover a foto de perfil do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
+        );
+      }
+    }
 
+    let localBase64Photo = data.photoUrl;
+    if (data.photoUrl && userEmail) {
+      const cached = await ensureOfflineCachedImage(`user_${userEmail}`, data.photoUrl);
+      if (cached) localBase64Photo = cached;
+    }
+
+    let finalPhotoUrl = data.photoUrl;
     if (data.photoUrl && userEmail && !data.photoUrl.startsWith('http')) {
       finalPhotoUrl = await uploadUserAvatarToStorage(userEmail, data.photoUrl);
     }
@@ -318,25 +463,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (Object.keys(authUpdates).length > 0) {
-      await updateProfile(currentUser, authUpdates);
+      try {
+        await withFirestoreTimeout(() => updateProfile(currentUser, authUpdates), 1500);
+      } catch (e) {
+        console.warn('Offline: updateProfile do Firebase Auth será sincronizado depois:', e);
+      }
     }
 
-    const effectivePhotoUrl =
-      finalPhotoUrl !== undefined ? (finalPhotoUrl || null) : user?.photoURL || currentUser.photoURL;
+    const effectiveRemotePhoto =
+      finalPhotoUrl !== undefined
+        ? finalPhotoUrl || null
+        : user?.photoURL || currentUser.photoURL;
+    const effectiveLocalPhoto =
+      localBase64Photo !== undefined
+        ? localBase64Photo || null
+        : user?.photoURL || currentUser.photoURL;
     const effectiveDisplayName =
       data.displayName !== undefined ? data.displayName.trim() : currentUser.displayName;
 
     if (userEmail) {
       await saveUserProfileToFirestoreAndCache(userEmail, {
         displayName: effectiveDisplayName || undefined,
-        photoUrl: effectivePhotoUrl,
+        photoUrl: effectiveRemotePhoto,
+        photoBase64: effectiveLocalPhoto,
       });
     }
 
     setUser({
       ...currentUser,
       displayName: effectiveDisplayName,
-      photoURL: effectivePhotoUrl,
+      photoURL: effectiveLocalPhoto,
     });
   };
 
@@ -344,9 +500,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!auth.currentUser) {
       throw new Error('Nenhum usuário conectado.');
     }
+    const online = await checkOnlineStatus(true);
+    if (!online) {
+      throw new Error('Conecte-se à internet para alterar sua senha.');
+    }
     const currentUser = auth.currentUser;
 
-    // Se forneceu a senha atual e temos o email do usuário, reautentica primeiro
     if (currentUser.email && currentPassword) {
       const cred = EmailAuthProvider.credential(currentUser.email, currentPassword);
       await reauthenticateWithCredential(currentUser, cred);
@@ -393,7 +552,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (isSuccessResponse(response)) {
         const idToken = response.data?.idToken;
         if (!idToken) {
-          throw new Error('ID Token do Google não encontrado. Verifique se o Web Client ID está configurado corretamente.');
+          throw new Error(
+            'ID Token do Google não encontrado. Verifique se o Web Client ID está configurado corretamente.'
+          );
         }
 
         const credential = GoogleAuthProvider.credential(idToken);
@@ -408,10 +569,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const { statusCodes } = gModuleCatch;
         switch (error.code) {
           case statusCodes.SIGN_IN_CANCELLED:
-            // Usuário fechou ou cancelou o seletor nativo do Google
             return false;
           case statusCodes.IN_PROGRESS:
-            // Já existe uma operação de autenticação em andamento
             return false;
           case statusCodes.PLAY_SERVICES_NOT_AVAILABLE:
             Alert.alert(
@@ -423,7 +582,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             console.error('Erro no Google Sign-In nativo:', error);
             Alert.alert(
               'Erro no Login Google',
-              error.message || 'Falha ao autenticar com o Google. Verifique se a chave SHA-1 está cadastrada no Firebase.'
+              error.message ||
+                'Falha ao autenticar com o Google. Verifique se a chave SHA-1 está cadastrada no Firebase.'
             );
             return false;
         }
@@ -456,10 +616,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!auth.currentUser) {
       throw new Error('Nenhum usuário conectado.');
     }
+    const online = await checkOnlineStatus(true);
+    if (!online) {
+      throw new Error(
+        'Não é possível excluir a conta e as informações do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+    }
+
     const currentUser = auth.currentUser;
     const userEmail = currentUser.email || '';
 
-    // 1. Reautenticação necessária para operações destrutivas no Firebase Auth
     const isGoogleOnly =
       currentUser.providerData.some((p) => p.providerId === 'google.com') &&
       !currentUser.providerData.some((p) => p.providerId === 'password');
@@ -472,12 +638,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await reauthenticateWithCredential(currentUser, credential);
     }
 
-    // 2. Apaga todos os dados do usuário no Firestore, Firebase Storage e AsyncStorage
     if (userEmail) {
       await StorageService.deleteAllUserData(userEmail);
     }
 
-    // 3. Se for usuário Google, desconecta do Google Sign-In nativo
     try {
       if (isGoogleSigninSupported()) {
         const gModule = getGoogleSignin();
@@ -485,14 +649,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await gModule.GoogleSignin.signOut().catch(() => {});
         }
       }
-    } catch {
-      // Ignora erro no logout do Google
-    }
+    } catch {}
 
-    // 4. Exclui o usuário no Firebase Authentication
     await deleteUser(currentUser);
-
-    // 5. Atualiza o estado
     setUser(null);
   };
 

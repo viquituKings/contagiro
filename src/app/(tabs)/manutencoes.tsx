@@ -97,6 +97,25 @@ export default function MaintenancesScreen() {
     else setLoading(true);
 
     try {
+      // 1. Carregamento instantâneo do cache local (5 últimas manutenções + totalizadores)
+      const [cachedVehicles, activeId] = await Promise.all([
+        StorageService.getCachedVehicles(),
+        StorageService.getActiveVehicleId(),
+      ]);
+      if (cachedVehicles.length > 0) {
+        setVehicles(cachedVehicles);
+        const cachedCur =
+          cachedVehicles.find((v) => v.id === activeId) || cachedVehicles[0] || null;
+        setVehicle(cachedCur);
+        if (cachedCur) {
+          const cachedList = await StorageService.getCachedMaintenances(cachedCur.id);
+          setMaintenances(cachedList);
+          setOdometer(String(cachedCur.currentOdometer));
+          setLoading(false);
+        }
+      }
+
+      // 2. Sincronização / atualização com preservação offline
       const allVehicles = await StorageService.getVehicles();
       setVehicles(allVehicles);
 
@@ -105,8 +124,13 @@ export default function MaintenancesScreen() {
 
       if (activeVeh) {
         const list = await StorageService.getMaintenances(activeVeh.id);
+        const updatedVehicles = await StorageService.getCachedVehicles();
+        const updatedVeh =
+          updatedVehicles.find((v) => v.id === activeVeh.id) || activeVeh;
+        setVehicles(updatedVehicles);
+        setVehicle(updatedVeh);
         setMaintenances(list);
-        setOdometer(String(activeVeh.currentOdometer));
+        setOdometer(String(updatedVeh.currentOdometer));
       } else {
         setMaintenances([]);
       }
@@ -132,12 +156,19 @@ export default function MaintenancesScreen() {
     setIsSwitchingVehicle(true);
     setVehicle(v);
     setOdometer(String(v.currentOdometer));
-    setMaintenances([]);
 
     try {
       await StorageService.setActiveVehicleId(v.id);
+      const cachedList = await StorageService.getCachedMaintenances(v.id);
+      if (requestId === latestSwitchRequestId.current) {
+        setMaintenances(cachedList);
+      }
       const list = await StorageService.getMaintenances(v.id);
       if (requestId === latestSwitchRequestId.current) {
+        const updatedVehicles = await StorageService.getCachedVehicles();
+        const updatedVeh = updatedVehicles.find((item) => item.id === v.id) || v;
+        setVehicles(updatedVehicles);
+        setVehicle(updatedVeh);
         setMaintenances(list);
       }
     } catch (e) {
@@ -390,16 +421,32 @@ export default function MaintenancesScreen() {
     }
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    const online = await StorageService.checkOnlineStatus(true);
+    if (!online) {
+      Alert.alert(
+        'Modo Offline',
+        'Não é possível excluir registros de manutenção do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+      return;
+    }
+
     Alert.alert('Excluir Manutenção', 'Deseja remover este registro do histórico e do banco de dados?', [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
-          await StorageService.deleteMaintenance(id);
-          await loadData();
-          NotificationService.syncMaintenanceNotifications().catch(() => {});
+          try {
+            await StorageService.deleteMaintenance(id);
+            await loadData();
+            NotificationService.syncMaintenanceNotifications().catch(() => {});
+          } catch (err: any) {
+            Alert.alert(
+              'Modo Offline',
+              err?.message || 'Não é possível excluir informações do banco de dados enquanto estiver offline.'
+            );
+          }
         },
       },
     ]);
@@ -410,10 +457,16 @@ export default function MaintenancesScreen() {
     : [];
 
   const wearStatus = vehicle
-    ? Calculations.getWearItemsStatus(vehicle.currentOdometer, maintenances)
+    ? Calculations.getWearItemsStatus(vehicle.currentOdometer, maintenances, vehicle)
     : { brake: null, tire: null };
 
-  const totalSpent = maintenances.reduce((acc, m) => acc + m.cost, 0);
+  const listTotalSpent = maintenances.reduce((acc, m) => acc + m.cost, 0);
+  const totalSpent =
+    vehicle?.gastoManutencao != null &&
+    (vehicle.qtdManutencoes ?? 0) >= maintenances.length &&
+    vehicle.gastoManutencao >= listTotalSpent
+      ? vehicle.gastoManutencao
+      : listTotalSpent;
 
   const theme = {
     bg: isDark ? '#090D16' : '#F8FAFC',

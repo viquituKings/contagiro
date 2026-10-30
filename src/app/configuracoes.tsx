@@ -1,27 +1,28 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  StyleSheet,
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  Image,
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  Modal,
-  Switch,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
 import { useAuth } from '@/context/auth-context';
 import { useAppTheme } from '@/context/theme-context';
 import { CacheService, CacheStats } from '@/services/cache-service';
-import { promptImageSource, pickAndOptimizeImage } from '@/services/image-picker';
+import { pickAndOptimizeImage, promptImageSource } from '@/services/image-picker';
 import { NotificationService } from '@/services/notifications';
+import { StorageService } from '@/services/storage';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -51,7 +52,6 @@ export default function SettingsScreen() {
   // Estados de Notificações na Bandeja
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [togglingNotifications, setTogglingNotifications] = useState(false);
-  const [testingNotification, setTestingNotification] = useState<'alerta' | 'atencao' | null>(null);
 
   // Estados de Exclusão de Conta
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
@@ -110,8 +110,17 @@ export default function SettingsScreen() {
   };
 
   // AÇÃO: Remover Foto de Perfil
-  const handleRemovePhoto = () => {
+  const handleRemovePhoto = async () => {
     if (!user?.photoURL) return;
+
+    const online = await StorageService.checkOnlineStatus(true);
+    if (!online) {
+      Alert.alert(
+        'Modo Offline',
+        'Não é possível remover sua foto de perfil do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+      return;
+    }
 
     Alert.alert('Remover Foto', 'Deseja remover sua foto de perfil atual?', [
       { text: 'Cancelar', style: 'cancel' },
@@ -126,7 +135,7 @@ export default function SettingsScreen() {
             Alert.alert('Sucesso', 'Foto de perfil removida com sucesso!');
           } catch (e: any) {
             console.error('Erro ao remover foto:', e);
-            Alert.alert('Erro', 'Não foi possível remover sua foto.');
+            Alert.alert('Erro', e.message || 'Não foi possível remover sua foto.');
           } finally {
             setAvatarLoading(false);
           }
@@ -288,22 +297,6 @@ export default function SettingsScreen() {
     }
   };
 
-  // AÇÃO: Disparar notificação de teste imediata
-  const handleTestNotification = async (type: 'alerta' | 'atencao') => {
-    setTestingNotification(type);
-    try {
-      await NotificationService.sendTestNotification(type);
-      Alert.alert(
-        'Notificação Agendada',
-        'Em 2 segundos a notificação será exibida na bandeja do smartphone. Se quiser, minimize o app para ver o banner na tela!'
-      );
-    } catch (e: any) {
-      Alert.alert('Atenção', e.message || 'Permissão de notificação não concedida nas configurações do dispositivo.');
-    } finally {
-      setTestingNotification(null);
-    }
-  };
-
   // AÇÃO: Sair da Conta
   const handleLogout = () => {
     Alert.alert('Sair da Conta', 'Deseja encerrar a sessão atual?', [
@@ -319,7 +312,15 @@ export default function SettingsScreen() {
   };
 
   // AÇÃO: Abrir Modal de Exclusão
-  const handleOpenDeleteModal = () => {
+  const handleOpenDeleteModal = async () => {
+    const online = await StorageService.checkOnlineStatus(true);
+    if (!online) {
+      Alert.alert(
+        'Modo Offline',
+        'Não é possível excluir sua conta e informações do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+      return;
+    }
     setDeletePassword('');
     setShowDeletePassword(false);
     setDeleteError(null);
@@ -872,47 +873,6 @@ export default function SettingsScreen() {
                 </View>
               </View>
             </View>
-
-            {/* BOTÕES DE TESTE NA BANDEJA */}
-            <View style={styles.testButtonsRow}>
-              <TouchableOpacity
-                style={[
-                  styles.testNotifyBtn,
-                  { borderColor: theme.red + '60', backgroundColor: isDark ? '#1F1419' : '#FEF2F2' },
-                ]}
-                onPress={() => handleTestNotification('alerta')}
-                disabled={testingNotification !== null}
-                activeOpacity={0.7}
-              >
-                {testingNotification === 'alerta' ? (
-                  <ActivityIndicator size="small" color={theme.red} />
-                ) : (
-                  <>
-                    <Ionicons name="notifications-outline" size={15} color={theme.red} />
-                    <Text style={[styles.testNotifyBtnText, { color: theme.red }]}>Testar Alerta (2s)</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.testNotifyBtn,
-                  { borderColor: theme.warning + '60', backgroundColor: isDark ? '#1F1A12' : '#FFFBEB' },
-                ]}
-                onPress={() => handleTestNotification('atencao')}
-                disabled={testingNotification !== null}
-                activeOpacity={0.7}
-              >
-                {testingNotification === 'atencao' ? (
-                  <ActivityIndicator size="small" color="#F59E0B" />
-                ) : (
-                  <>
-                    <Ionicons name="paper-plane-outline" size={15} color="#F59E0B" />
-                    <Text style={[styles.testNotifyBtnText, { color: '#F59E0B' }]}>Testar Lembrete (2s)</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
           </View>
 
           {/* SEÇÃO 4: USO DE ARMAZENAMENTO E CACHE */}
@@ -957,8 +917,8 @@ export default function SettingsScreen() {
                         (cacheStats?.usagePercent ?? 0) > 85
                           ? theme.red
                           : (cacheStats?.usagePercent ?? 0) > 60
-                          ? '#F59E0B'
-                          : theme.accent,
+                            ? '#F59E0B'
+                            : theme.accent,
                     },
                   ]}
                 />
@@ -1261,7 +1221,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     gap: 16,
-    paddingBottom: 36,
+    paddingBottom: 56,
   },
   sectionCard: {
     borderRadius: 18,

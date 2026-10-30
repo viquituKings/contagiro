@@ -68,6 +68,18 @@ export default function GarageScreen() {
     if (isPull) setRefreshing(true);
     else setLoading(true);
     try {
+      // 1. Exibe imediatamente todos os cadastros, avatares e totalizadores em cache
+      const [cachedList, cachedActive] = await Promise.all([
+        StorageService.getCachedVehicles(),
+        StorageService.getActiveVehicleId(),
+      ]);
+      if (cachedList.length > 0) {
+        setVehicles(cachedList);
+        setActiveId(cachedActive || (cachedList[0]?.id ?? null));
+        setLoading(false);
+      }
+
+      // 2. Sincroniza/atualiza com preservação de dados offline
       const list = await StorageService.getVehicles();
       const curActive = await StorageService.getActiveVehicleId();
       setVehicles(list);
@@ -263,9 +275,17 @@ export default function GarageScreen() {
     }
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (vehicles.length <= 1) {
       Alert.alert('Atenção', 'Você precisa ter pelo menos um veículo cadastrado.');
+      return;
+    }
+    const online = await StorageService.checkOnlineStatus(true);
+    if (!online) {
+      Alert.alert(
+        'Modo Offline',
+        'Não é possível excluir veículos do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
       return;
     }
     Alert.alert('Remover Veículo', 'Deseja excluir este veículo da sua garagem e do banco de dados?', [
@@ -274,8 +294,15 @@ export default function GarageScreen() {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
-          await StorageService.deleteVehicle(id);
-          await loadData();
+          try {
+            await StorageService.deleteVehicle(id);
+            await loadData();
+          } catch (err: any) {
+            Alert.alert(
+              'Modo Offline',
+              err?.message || 'Não é possível excluir informações do banco de dados enquanto estiver offline.'
+            );
+          }
         },
       },
     ]);

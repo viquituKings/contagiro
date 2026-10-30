@@ -1,5 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image as ExpoImage } from 'expo-image';
+import {
+  limitRefuelingsPerVehicleForCache,
+  limitMaintenancesPerVehicleForCache,
+} from '@/services/storage';
+import { SyncService } from '@/services/sync-service';
+import { Refueling, MaintenanceItem } from '@/types/vehicle';
 
 export interface CacheBreakdownItem {
   id: string;
@@ -51,13 +57,16 @@ export const CacheService = {
       let otherBytes = 0;
 
       for (const [key, value] of pairs) {
-        // Estima o tamanho em bytes UTF-8 (2 bytes médios por char para Base64/Unicode)
         const keySize = key.length;
         const valSize = value ? value.length : 0;
         const entryBytes = keySize + valSize;
         totalBytes += entryBytes;
 
-        if (key.includes('vehicle') || key.includes('veiculo')) {
+        if (
+          key.includes('vehicle') ||
+          key.includes('veiculo') ||
+          key === '@contagiro:avatar_cache_v1'
+        ) {
           vehiclesBytes += entryBytes;
         } else if (key.includes('refueling') || key.includes('abastecimento')) {
           refuelingsBytes += entryBytes;
@@ -70,7 +79,6 @@ export const CacheService = {
         }
       }
 
-      // Garante uma visualização mínima de medição se estiver vazio
       const safeTotal = Math.max(totalBytes, 1024);
       const usagePercent = Math.min(
         Math.max(Number(((safeTotal / MAX_CACHE_BUDGET_BYTES) * 100).toFixed(2)), 0.1),
@@ -85,7 +93,7 @@ export const CacheService = {
       const breakdown: CacheBreakdownItem[] = [
         {
           id: 'vehicles',
-          label: 'Veículos e Fotos',
+          label: 'Veículos, Totalizadores e Avatares',
           bytes: vehiclesBytes,
           formatted: formatBytes(vehiclesBytes),
           percent: calcPercent(vehiclesBytes),
@@ -94,7 +102,7 @@ export const CacheService = {
         },
         {
           id: 'refuelings',
-          label: 'Abastecimentos',
+          label: 'Últimos 5 Abastecimentos / Veículo',
           bytes: refuelingsBytes,
           formatted: formatBytes(refuelingsBytes),
           percent: calcPercent(refuelingsBytes),
@@ -103,7 +111,7 @@ export const CacheService = {
         },
         {
           id: 'maintenances',
-          label: 'Histórico de Manutenções',
+          label: 'Últimas 5 Manutenções / Veículo',
           bytes: maintenancesBytes,
           formatted: formatBytes(maintenancesBytes),
           percent: calcPercent(maintenancesBytes),
@@ -112,7 +120,7 @@ export const CacheService = {
         },
         {
           id: 'profile',
-          label: 'Perfil e Cache de Imagem',
+          label: 'Perfil e Foto Offline',
           bytes: profileBytes,
           formatted: formatBytes(profileBytes),
           percent: calcPercent(profileBytes),
@@ -121,7 +129,7 @@ export const CacheService = {
         },
         {
           id: 'other',
-          label: 'Preferências e Metadados',
+          label: 'Preferências e Sincronização',
           bytes: otherBytes,
           formatted: formatBytes(otherBytes),
           percent: calcPercent(otherBytes),
@@ -154,44 +162,56 @@ export const CacheService = {
   },
 
   /**
-   * Limpa o cache de imagens em disco e memória, e recicla chaves temporárias do AsyncStorage.
-   * Não apaga credenciais nem configurações essenciais do usuário.
+   * Otimiza o cache do aplicativo mantendo todos os dados obrigatórios para operação offline:
+   * - Cadastro completo e totalizadores de todos os veículos
+   * - Imagens dos avatares de todos os veículos e imagem de perfil
+   * - Os 5 últimos abastecimentos de todos os veículos
+   * - Os 5 últimos registros de manutenção de todos os veículos
+   * - Fila de sincronização offline pendente
    */
   async clearAppCache(): Promise<{ freedBytes: number; formattedFreed: string }> {
     const beforeStats = await this.getCacheStats();
 
-    // 1. Limpa cache do expo-image
+    // 1. Limpa apenas o cache volátil de memória de imagens (mantendo o disco e Base64 para modo offline)
     try {
       await ExpoImage.clearMemoryCache();
-      await ExpoImage.clearDiskCache();
     } catch (e) {
-      console.warn('Aviso: Falha ao limpar cache do expo-image:', e);
+      console.warn('Aviso: Falha ao limpar cache de memória do expo-image:', e);
     }
 
-    // 2. Limpa dados temporários do AsyncStorage (preservando login, perfil ativo, tema e veículos sincronizados)
+    // 2. Compacta as listas de abastecimentos e manutenções em cache para garantir no máximo 5 por veículo
     try {
+      const queue = await SyncService.getQueue();
+      const pendingRefIds = new Set(
+        queue.filter((q) => q.action === 'ADD_REFUELING').map((q) => q.entityId)
+      );
+      const pendingMntIds = new Set(
+        queue.filter((q) => q.action === 'ADD_MAINTENANCE').map((q) => q.entityId)
+      );
+
       const allKeys = await AsyncStorage.getAllKeys();
-      // Chaves protegidas que não devem ser apagadas
-      const protectedKeys = [
-        '@contagiro:theme_preference',
-        '@contagiro:active_vehicle_id_v1',
-      ];
-
-      const keysToRemove = allKeys.filter((key) => {
-        if (protectedKeys.includes(key)) return false;
-        if (key.startsWith('@contagiro:user_profile_')) return false; // Mantém perfil em cache para exibição instantânea
-        // Chaves de cache secundário de consultas podem ser limpas e sincronizadas novamente
-        if (key.includes('refuelings_v1_') || key === '@contagiro:fuel_prices_v1') {
-          return true;
+      for (const key of allKeys) {
+        if (key === '@contagiro:refuelings_v1' || key.startsWith('@contagiro:refuelings_v1_')) {
+          const raw = await AsyncStorage.getItem(key);
+          if (raw) {
+            const parsed: Refueling[] = JSON.parse(raw);
+            const trimmed = limitRefuelingsPerVehicleForCache(parsed, pendingRefIds);
+            await AsyncStorage.setItem(key, JSON.stringify(trimmed));
+          }
+        } else if (
+          key === '@contagiro:maintenances_v1' ||
+          key.startsWith('@contagiro:maintenances_v1_')
+        ) {
+          const raw = await AsyncStorage.getItem(key);
+          if (raw) {
+            const parsed: MaintenanceItem[] = JSON.parse(raw);
+            const trimmed = limitMaintenancesPerVehicleForCache(parsed, pendingMntIds);
+            await AsyncStorage.setItem(key, JSON.stringify(trimmed));
+          }
         }
-        return false;
-      });
-
-      if (keysToRemove.length > 0) {
-        await AsyncStorage.multiRemove(keysToRemove);
       }
     } catch (e) {
-      console.warn('Erro ao limpar chaves temporárias do AsyncStorage:', e);
+      console.warn('Erro ao otimizar chaves do AsyncStorage:', e);
     }
 
     const afterStats = await this.getCacheStats();
@@ -203,4 +223,3 @@ export const CacheService = {
     };
   },
 };
-

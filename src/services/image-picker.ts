@@ -1,8 +1,10 @@
 import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Image as ExpoImage } from 'expo-image';
 import { ref, uploadBytes, uploadString, getDownloadURL } from 'firebase/storage';
-import { storage } from '@/services/firebase';
+import { storage, withFirestoreTimeout, checkOnlineStatus } from '@/services/firebase';
 
 export interface OptimizedImageResult {
   /** URI local em cache no dispositivo */
@@ -14,6 +16,115 @@ export interface OptimizedImageResult {
 }
 
 export type ImageSourceType = 'camera' | 'gallery';
+
+const AVATAR_CACHE_KEY = '@contagiro:avatar_cache_v1';
+
+/**
+ * Lê o mapa de avatares em cache local (chaves por vehicleId, email ou URL)
+ */
+export async function getAvatarCacheMap(): Promise<Record<string, string>> {
+  try {
+    const raw = await AsyncStorage.getItem(AVATAR_CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Salva um avatar (em Base64) no cache local do aparelho associado a uma chave (ex: vehicleId ou email)
+ */
+export async function saveAvatarToLocalCache(key: string, base64OrUri?: string | null): Promise<void> {
+  if (!key) return;
+  try {
+    const map = await getAvatarCacheMap();
+    if (!base64OrUri) {
+      delete map[key];
+    } else {
+      map[key] = base64OrUri;
+    }
+    await AsyncStorage.setItem(AVATAR_CACHE_KEY, JSON.stringify(map));
+  } catch (e) {
+    console.warn('Erro ao salvar avatar no cache local:', e);
+  }
+}
+
+/**
+ * Converte uma URL HTTP(S) de imagem (ex: foto do Google ou Firebase Storage) para Base64
+ * e armazena no cache local do aparelho para exibição offline instantânea.
+ */
+export async function ensureOfflineCachedImage(
+  entityKey: string,
+  urlOrBase64?: string | null
+): Promise<string | undefined> {
+  if (!urlOrBase64) {
+    const map = await getAvatarCacheMap();
+    return map[entityKey] || undefined;
+  }
+
+  // Se já for Data URI em Base64, salva diretamente no cache e retorna
+  if (urlOrBase64.startsWith('data:')) {
+    await saveAvatarToLocalCache(entityKey, urlOrBase64);
+    return urlOrBase64;
+  }
+
+  const map = await getAvatarCacheMap();
+
+  // Se já convertemos esta URL ou entidade para Base64 antes, retorna do cache local
+  if (map[urlOrBase64] && map[urlOrBase64].startsWith('data:')) {
+    if (map[entityKey] !== map[urlOrBase64]) {
+      map[entityKey] = map[urlOrBase64];
+      await AsyncStorage.setItem(AVATAR_CACHE_KEY, JSON.stringify(map)).catch(() => {});
+    }
+    return map[urlOrBase64];
+  }
+
+  if (map[entityKey] && map[entityKey].startsWith('data:')) {
+    return map[entityKey];
+  }
+
+  // Se for URL remota HTTP(S), tenta baixar e converter para Base64 se estiver online
+  if (urlOrBase64.startsWith('http://') || urlOrBase64.startsWith('https://')) {
+    try {
+      const online = await checkOnlineStatus(false);
+      if (!online) {
+        return map[entityKey] || urlOrBase64;
+      }
+
+      ExpoImage.prefetch(urlOrBase64).catch(() => {});
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const response = await fetch(urlOrBase64, { signal: controller.signal });
+      clearTimeout(timer);
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const base64DataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            if (typeof reader.result === 'string' && reader.result.startsWith('data:')) {
+              resolve(reader.result);
+            } else {
+              reject(new Error('Falha na conversão Base64'));
+            }
+          };
+          reader.onerror = () => reject(new Error('Erro no FileReader'));
+          reader.readAsDataURL(blob);
+        });
+
+        map[entityKey] = base64DataUri;
+        map[urlOrBase64] = base64DataUri;
+        await AsyncStorage.setItem(AVATAR_CACHE_KEY, JSON.stringify(map));
+        return base64DataUri;
+      }
+    } catch {
+      // Se falhar ou estiver offline, retorna o que houver no cache ou a própria URL
+    }
+  }
+
+  return map[entityKey] || urlOrBase64;
+}
 
 /**
  * Solicita permissão e abre Câmera ou Galeria, recortando em formato quadrado (1:1)
@@ -141,26 +252,32 @@ export async function uploadToFirebaseStorageOrFallback(
   storagePath: string
 ): Promise<string> {
   try {
-    const storageRef = ref(storage, storagePath);
-
-    if (imageResult.base64Uri && imageResult.base64Uri.startsWith('data:')) {
-      await uploadString(storageRef, imageResult.base64Uri, 'data_url');
-    } else {
-      const response = await fetch(imageResult.uri);
-      const blob = await response.blob();
-      await uploadBytes(storageRef, blob, {
-        contentType: 'image/jpeg',
-      });
+    const online = await checkOnlineStatus(false);
+    if (!online) {
+      return imageResult.base64Uri;
     }
 
-    const downloadUrl = await getDownloadURL(storageRef);
+    const storageRef = ref(storage, storagePath);
+
+    await withFirestoreTimeout(async () => {
+      if (imageResult.base64Uri && imageResult.base64Uri.startsWith('data:')) {
+        await uploadString(storageRef, imageResult.base64Uri, 'data_url');
+      } else {
+        const response = await fetch(imageResult.uri);
+        const blob = await response.blob();
+        await uploadBytes(storageRef, blob, {
+          contentType: 'image/jpeg',
+        });
+      }
+    }, 2500);
+
+    const downloadUrl = await withFirestoreTimeout(() => getDownloadURL(storageRef), 2000);
     return downloadUrl;
   } catch (error) {
     console.warn(
-      'Aviso: Não foi possível enviar para o Firebase Storage (o bucket pode não estar configurado). Utilizando Base64 comprimida no banco de dados:',
+      'Aviso: Não foi possível enviar para o Firebase Storage. Utilizando Base64 comprimida no banco de dados:',
       error
     );
-    // Como a imagem foi comprimida para ~25KB, ela cabe com extrema folga no Firestore/AsyncStorage
     return imageResult.base64Uri;
   }
 }

@@ -39,7 +39,7 @@ export default function DashboardScreen() {
   const [pendingCount, setPendingCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const toastTimeoutRef = React.useRef<any>(null);
+  const toastTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = (msg: string) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -63,14 +63,24 @@ export default function DashboardScreen() {
     if (isSyncing || pendingCount === 0) return;
     setIsSyncing(true);
     try {
+      const online = await StorageService.checkOnlineStatus(true);
+      if (!online) {
+        Alert.alert(
+          'Sem Conexão',
+          'Você ainda está offline. Seus dados estão seguros no aparelho e poderão ser sincronizados assim que houver conexão com a internet.'
+        );
+        return;
+      }
+
       const result = await SyncService.syncNow();
       if (result.syncedCount > 0) {
-        showToast('Dados enviados ao banco de dados com sucesso!');
+        showToast('Dados sincronizados com a nuvem com sucesso!');
+        await StorageService.preloadOfflineData(true);
         await loadData();
       } else if (result.errors.length > 0) {
         Alert.alert(
           'Aviso de Sincronização',
-          'Não foi possível enviar todos os dados. Verifique sua conexão com a internet.'
+          'Não foi possível enviar todos os dados. Verifique sua conexão com a internet e tente novamente.'
         );
       }
     } catch {
@@ -87,20 +97,52 @@ export default function DashboardScreen() {
 
   const loadData = async (preserveVehicleId?: string) => {
     try {
+      SyncService.getPendingCount().then(setPendingCount).catch(() => {});
+
+      // 1. Carrega primeiro do cache local do aparelho para exibição instantânea (especialmente offline)
+      const [cachedVehicles, activeVehId] = await Promise.all([
+        StorageService.getCachedVehicles(),
+        StorageService.getActiveVehicleId(),
+      ]);
+
+      if (cachedVehicles.length > 0) {
+        setVehicles(cachedVehicles);
+        const targetCachedId = preserveVehicleId || vehicle?.id || activeVehId;
+        const currentCachedVehicle =
+          cachedVehicles.find((v) => v.id === targetCachedId) ||
+          cachedVehicles.find((v) => v.id === activeVehId) ||
+          cachedVehicles[0] ||
+          null;
+
+        if (currentCachedVehicle) {
+          setVehicle(currentCachedVehicle);
+          setNewOdometerInput(String(currentCachedVehicle.currentOdometer));
+          const [cachedRefs, cachedMnts] = await Promise.all([
+            StorageService.getCachedRefuelings(currentCachedVehicle.id),
+            StorageService.getCachedMaintenances(currentCachedVehicle.id),
+          ]);
+          setRefuelings(cachedRefs);
+          setMaintenances(cachedMnts);
+          setLoading(false);
+        }
+      }
+
+      // 2. Sincroniza/atualiza com o StorageService (que preserva dados offline e atualiza o cache de 5 registros e totalizadores)
       await StorageService.init();
-      const [allVehicles, activeVehId] = await Promise.all([
+      const [allVehicles, latestActiveId] = await Promise.all([
         StorageService.getVehicles(),
         StorageService.getActiveVehicleId(),
       ]);
       setVehicles(allVehicles);
 
-      const targetId = preserveVehicleId || vehicle?.id || activeVehId;
+      const targetId = preserveVehicleId || vehicle?.id || latestActiveId;
       let currentVehicle: Vehicle | null = null;
 
       if (targetId && allVehicles.some((v) => v.id === targetId)) {
         currentVehicle = allVehicles.find((v) => v.id === targetId) || null;
       } else {
-        currentVehicle = allVehicles.find((v) => v.id === activeVehId) || allVehicles[0] || null;
+        currentVehicle =
+          allVehicles.find((v) => v.id === latestActiveId) || allVehicles[0] || null;
       }
 
       setVehicle(currentVehicle);
@@ -110,9 +152,15 @@ export default function DashboardScreen() {
           StorageService.getRefuelings(currentVehicle.id),
           StorageService.getMaintenances(currentVehicle.id),
         ]);
+        // Recarrega o veículo atualizado com os totalizadores calculados
+        const refreshedVehicles = await StorageService.getCachedVehicles();
+        const refreshedCurrent =
+          refreshedVehicles.find((v) => v.id === currentVehicle?.id) || currentVehicle;
+        setVehicles(refreshedVehicles);
+        setVehicle(refreshedCurrent);
         setRefuelings(refData);
         setMaintenances(mainData);
-        setNewOdometerInput(String(currentVehicle.currentOdometer));
+        setNewOdometerInput(String(refreshedCurrent.currentOdometer));
       } else {
         setRefuelings([]);
         setMaintenances([]);
@@ -131,10 +179,24 @@ export default function DashboardScreen() {
     await StorageService.setActiveVehicleId(targetVehicle.id);
 
     try {
+      // Exibe imediatamente os 5 últimos do cache local do veículo selecionado
+      const [cachedRefs, cachedMnts] = await Promise.all([
+        StorageService.getCachedRefuelings(targetVehicle.id),
+        StorageService.getCachedMaintenances(targetVehicle.id),
+      ]);
+      setRefuelings(cachedRefs);
+      setMaintenances(cachedMnts);
+
+      // E atualiza com o banco se estiver online
       const [refData, mainData] = await Promise.all([
         StorageService.getRefuelings(targetVehicle.id),
         StorageService.getMaintenances(targetVehicle.id),
       ]);
+      const refreshedVehicles = await StorageService.getCachedVehicles();
+      const refreshedTarget =
+        refreshedVehicles.find((v) => v.id === targetVehicle.id) || targetVehicle;
+      setVehicles(refreshedVehicles);
+      setVehicle(refreshedTarget);
       setRefuelings(refData);
       setMaintenances(mainData);
     } catch (e) {
@@ -193,7 +255,11 @@ export default function DashboardScreen() {
     : null;
 
   const urgentAlerts = alerts.filter(
-    (a) => a.status === 'vencido' || a.status === 'alerta' || a.status === 'atencao' || a.status === 'proximo'
+    (a) =>
+      a.status === 'vencido' ||
+      a.status === 'alerta' ||
+      a.status === 'atencao' ||
+      a.status === 'proximo'
   );
   const lastRefueling = refuelings[0];
 
@@ -213,7 +279,10 @@ export default function DashboardScreen() {
   };
 
   return (
-    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+    <SafeAreaView
+      edges={['top', 'left', 'right']}
+      style={[styles.safeArea, { backgroundColor: theme.bg }]}
+    >
       {/* TOAST DE NOTIFICAÇÃO DA SINCRONIZAÇÃO */}
       {toastMessage && (
         <View style={styles.toastContainer} pointerEvents="none">
@@ -296,7 +365,10 @@ export default function DashboardScreen() {
 
             {/* BOTÃO GARAGEM */}
             <TouchableOpacity
-              style={[styles.garageBtn, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+              style={[
+                styles.garageBtn,
+                { backgroundColor: theme.card, borderColor: theme.cardBorder },
+              ]}
               onPress={() => router.push('/garagem')}
             >
               <Ionicons name="car-sport" size={18} color={theme.accent} />
@@ -305,9 +377,59 @@ export default function DashboardScreen() {
           </View>
         </View>
 
+        {/* AVISO DE DADOS OFFLINE PENDENTES DE SINCRONIZAÇÃO COM A NUVEM */}
+        {pendingCount > 0 && (
+          <TouchableOpacity
+            style={[
+              styles.offlinePendingBanner,
+              {
+                backgroundColor: isDark ? 'rgba(245, 158, 11, 0.15)' : '#FFFBEB',
+                borderColor: '#F59E0B',
+              },
+            ]}
+            onPress={handleForceSync}
+            disabled={isSyncing}
+            activeOpacity={0.8}
+          >
+            <View style={styles.offlinePendingIconBox}>
+              {isSyncing ? (
+                <ActivityIndicator size="small" color="#D97706" />
+              ) : (
+                <Ionicons name="cloud-offline-outline" size={18} color="#D97706" />
+              )}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.offlinePendingTitle,
+                  { color: isDark ? '#FBBF24' : '#92400E' },
+                ]}
+              >
+                {pendingCount === 1
+                  ? 'Existe 1 registro salvo offline aguardando sincronização'
+                  : `Existem ${pendingCount} registros salvos offline aguardando sincronização`}
+              </Text>
+              <Text
+                style={[
+                  styles.offlinePendingSubtitle,
+                  { color: isDark ? '#FDE68A' : '#B45309' },
+                ]}
+              >
+                Toque aqui ou no botão &quot;Sincronizar&quot; acima quando estiver conectado à internet.
+              </Text>
+            </View>
+            <Ionicons
+              name="sync-circle"
+              size={22}
+              color={isDark ? '#FBBF24' : '#D97706'}
+            />
+          </TouchableOpacity>
+        )}
+
         {/* SELETOR COMPACTO DE VEÍCULOS (FIXO NO TOPO) */}
-        {!loading && vehicle && (
-          vehicles.length > 1 ? (
+        {!loading &&
+          vehicle &&
+          (vehicles.length > 1 ? (
             <View
               style={[
                 styles.compactSelectorCard,
@@ -323,14 +445,21 @@ export default function DashboardScreen() {
                   <View style={styles.expandedHeaderRow}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                       <Ionicons name="car-sport" size={14} color={theme.accent} />
-                      <Text style={[styles.expandedTitle, { color: theme.text }]}>Selecionar Veículo</Text>
+                      <Text style={[styles.expandedTitle, { color: theme.text }]}>
+                        Selecionar Veículo
+                      </Text>
                     </View>
                     <TouchableOpacity
                       onPress={() => setIsSelectorExpanded(false)}
-                      style={[styles.collapseBtn, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}
+                      style={[
+                        styles.collapseBtn,
+                        { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                      ]}
                       activeOpacity={0.7}
                     >
-                      <Text style={[styles.collapseBtnText, { color: theme.textMuted }]}>Fechar</Text>
+                      <Text style={[styles.collapseBtnText, { color: theme.textMuted }]}>
+                        Fechar
+                      </Text>
                       <Ionicons name="chevron-up" size={12} color={theme.textMuted} />
                     </TouchableOpacity>
                   </View>
@@ -372,8 +501,8 @@ export default function DashboardScreen() {
                                       ? 'rgba(16, 185, 129, 0.25)'
                                       : 'rgba(16, 185, 129, 0.15)'
                                     : isDark
-                                      ? '#1E293B'
-                                      : '#E2E8F0',
+                                    ? '#1E293B'
+                                    : '#E2E8F0',
                                 },
                               ]}
                             >
@@ -400,7 +529,10 @@ export default function DashboardScreen() {
                                 <Ionicons name="star" size={12} color="#F59E0B" />
                               )}
                             </View>
-                            <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]} numberOfLines={1}>
+                            <Text
+                              style={[styles.compactVehicleMeta, { color: theme.textMuted }]}
+                              numberOfLines={1}
+                            >
                               {v.plate} • {v.currentOdometer.toLocaleString('pt-BR')} km
                             </Text>
                           </View>
@@ -426,7 +558,12 @@ export default function DashboardScreen() {
                     {vehicle.photoUrl ? (
                       <Image source={{ uri: vehicle.photoUrl }} style={styles.compactAvatar} />
                     ) : (
-                      <View style={[styles.compactIconCircle, { backgroundColor: theme.accentLight }]}>
+                      <View
+                        style={[
+                          styles.compactIconCircle,
+                          { backgroundColor: theme.accentLight },
+                        ]}
+                      >
                         <Ionicons
                           name={vehicle.vehicleType === 'moto' ? 'bicycle' : 'car-sport'}
                           size={14}
@@ -436,7 +573,10 @@ export default function DashboardScreen() {
                     )}
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                        <Text style={[styles.compactVehicleName, { color: theme.text }]} numberOfLines={1}>
+                        <Text
+                          style={[styles.compactVehicleName, { color: theme.text }]}
+                          numberOfLines={1}
+                        >
                           {vehicle.name}
                         </Text>
                         {(vehicle.isPreferred || vehicles[0]?.id === vehicle.id) && (
@@ -449,7 +589,12 @@ export default function DashboardScreen() {
                     </View>
                   </View>
 
-                  <View style={[styles.compactSwitchBadge, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                  <View
+                    style={[
+                      styles.compactSwitchBadge,
+                      { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                    ]}
+                  >
                     <Text style={[styles.compactSwitchText, { color: theme.accent }]}>
                       Trocar ({vehicles.length})
                     </Text>
@@ -460,7 +605,12 @@ export default function DashboardScreen() {
             </View>
           ) : (
             /* APENAS 1 VEÍCULO CADASTRADO: BARRA SLIM */
-            <View style={[styles.singleVehicleSlimBar, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <View
+              style={[
+                styles.singleVehicleSlimBar,
+                { backgroundColor: theme.card, borderColor: theme.cardBorder },
+              ]}
+            >
               {vehicle.photoUrl ? (
                 <Image source={{ uri: vehicle.photoUrl }} style={styles.compactAvatar} />
               ) : (
@@ -473,7 +623,10 @@ export default function DashboardScreen() {
                 </View>
               )}
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={[styles.compactVehicleName, { color: theme.text }]} numberOfLines={1}>
+                <Text
+                  style={[styles.compactVehicleName, { color: theme.text }]}
+                  numberOfLines={1}
+                >
                   {vehicle.name}
                 </Text>
                 <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]}>
@@ -487,19 +640,34 @@ export default function DashboardScreen() {
                 </Text>
               </View>
             </View>
-          )
-        )}
+          ))}
       </View>
 
       {/* ÁREA ROLÁVEL COM AS INFORMAÇÕES */}
       <ScrollView
         contentContainerStyle={styles.scrollContainer}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.accent} />}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.accent} />
+        }
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
-          <View style={[styles.loadingContainer, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-            <View style={[styles.loadingIconCircle, { backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : 'rgba(16, 185, 129, 0.1)' }]}>
+          <View
+            style={[
+              styles.loadingContainer,
+              { backgroundColor: theme.card, borderColor: theme.cardBorder },
+            ]}
+          >
+            <View
+              style={[
+                styles.loadingIconCircle,
+                {
+                  backgroundColor: isDark
+                    ? 'rgba(16, 185, 129, 0.15)'
+                    : 'rgba(16, 185, 129, 0.1)',
+                },
+              ]}
+            >
               <ActivityIndicator size="large" color={theme.accent} />
             </View>
             <Text style={[styles.loadingTitle, { color: theme.text }]}>
@@ -511,10 +679,12 @@ export default function DashboardScreen() {
           </View>
         ) : vehicle ? (
           <>
-
-            {/* CARD DE ATUALIZAÇÃO DO ODÔMETRO (SEM REDUNDÂNCIAS) */}
+            {/* CARD DE ATUALIZAÇÃO DO ODÔMETRO */}
             <TouchableOpacity
-              style={[styles.odometerCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+              style={[
+                styles.odometerCard,
+                { backgroundColor: theme.card, borderColor: theme.cardBorder },
+              ]}
               onPress={() => setOdometerModalVisible(true)}
               activeOpacity={0.7}
             >
@@ -533,9 +703,16 @@ export default function DashboardScreen() {
                 </View>
               </View>
 
-              <View style={[styles.odometerCardAction, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+              <View
+                style={[
+                  styles.odometerCardAction,
+                  { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                ]}
+              >
                 <Ionicons name="pencil" size={13} color={theme.accent} />
-                <Text style={[styles.odometerCardActionText, { color: theme.accent }]}>Atualizar</Text>
+                <Text style={[styles.odometerCardActionText, { color: theme.accent }]}>
+                  Atualizar
+                </Text>
               </View>
             </TouchableOpacity>
 
@@ -566,53 +743,134 @@ export default function DashboardScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* MÉTRICAS PRINCIPAIS (GAUGES & MÉDIAS) */}
+            {/* MÉTRICAS E TOTALIZADORES DO VEÍCULO (DISPONÍVEIS ONLINE E OFFLINE) */}
             {stats && (
-              <View style={styles.metricsGrid}>
-                {/* Card Média Consumo */}
-                <View style={[styles.metricCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-                  <View style={styles.metricHeader}>
-                    <Text style={[styles.metricLabel, { color: theme.textMuted }]}>Média de Consumo</Text>
-                    <View style={[styles.iconCircle, { backgroundColor: theme.accentLight }]}>
-                      <Ionicons name="leaf-outline" size={16} color={theme.accent} />
+              <>
+                <View style={styles.metricsGrid}>
+                  {/* Card Média Consumo */}
+                  <View
+                    style={[
+                      styles.metricCard,
+                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                    ]}
+                  >
+                    <View style={styles.metricHeader}>
+                      <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
+                        Média de Consumo
+                      </Text>
+                      <View style={[styles.iconCircle, { backgroundColor: theme.accentLight }]}>
+                        <Ionicons name="leaf-outline" size={16} color={theme.accent} />
+                      </View>
                     </View>
+                    <Text style={[styles.metricBigValue, { color: theme.accent }]}>
+                      {stats.averageConsumption} <Text style={styles.metricUnit}>km/L</Text>
+                    </Text>
+                    <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                      {stats.bestConsumption
+                        ? `Melhor: ${stats.bestConsumption} km/L`
+                        : 'Baseado em tanques cheios'}
+                    </Text>
                   </View>
-                  <Text style={[styles.metricBigValue, { color: theme.accent }]}>
-                    {stats.averageConsumption} <Text style={styles.metricUnit}>km/L</Text>
-                  </Text>
-                  <Text style={[styles.metricSub, { color: theme.textMuted }]}>
-                    {stats.bestConsumption ? `Melhor: ${stats.bestConsumption} km/L` : 'Baseado em tanques cheios'}
-                  </Text>
+
+                  {/* Card Custo por KM */}
+                  <View
+                    style={[
+                      styles.metricCard,
+                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                    ]}
+                  >
+                    <View style={styles.metricHeader}>
+                      <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
+                        Custo Médio / km
+                      </Text>
+                      <View
+                        style={[
+                          styles.iconCircle,
+                          { backgroundColor: 'rgba(59, 130, 246, 0.15)' },
+                        ]}
+                      >
+                        <Ionicons name="cash-outline" size={16} color={theme.blue} />
+                      </View>
+                    </View>
+                    <Text style={[styles.metricBigValue, { color: theme.blue }]}>
+                      R$ {stats.averageCostPerKm.toFixed(2)}{' '}
+                      <Text style={styles.metricUnit}>/km</Text>
+                    </Text>
+                    <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                      Combustível rodado
+                    </Text>
+                  </View>
                 </View>
 
-                {/* Card Custo por KM */}
-                <View style={[styles.metricCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-                  <View style={styles.metricHeader}>
-                    <Text style={[styles.metricLabel, { color: theme.textMuted }]}>Custo Médio / km</Text>
-                    <View style={[styles.iconCircle, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
-                      <Ionicons name="cash-outline" size={16} color={theme.blue} />
+                <View style={styles.metricsGrid}>
+                  {/* Totalizador de Abastecimento */}
+                  <TouchableOpacity
+                    style={[
+                      styles.metricCard,
+                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                    ]}
+                    onPress={() => router.push('/abastecimentos')}
+                    activeOpacity={0.75}
+                  >
+                    <View style={styles.metricHeader}>
+                      <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
+                        Total Abastecido
+                      </Text>
+                      <View style={[styles.iconCircle, { backgroundColor: theme.accentLight }]}>
+                        <Ionicons name="water-outline" size={16} color={theme.accent} />
+                      </View>
                     </View>
-                  </View>
-                  <Text style={[styles.metricBigValue, { color: theme.blue }]}>
-                    R$ {stats.averageCostPerKm.toFixed(2)} <Text style={styles.metricUnit}>/km</Text>
-                  </Text>
-                  <Text style={[styles.metricSub, { color: theme.textMuted }]}>
-                    Combustível rodado
-                  </Text>
+                    <Text style={[styles.metricBigValue, { color: theme.text }]}>
+                      R$ {stats.totalFuelSpent.toFixed(2)}
+                    </Text>
+                    <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                      {stats.totalLiters.toFixed(1)} L em {stats.refuelingsCount} abastecimento(s)
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Totalizador de Manutenção */}
+                  <TouchableOpacity
+                    style={[
+                      styles.metricCard,
+                      { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                    ]}
+                    onPress={() => router.push('/manutencoes')}
+                    activeOpacity={0.75}
+                  >
+                    <View style={styles.metricHeader}>
+                      <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
+                        Gasto em Manutenção
+                      </Text>
+                      <View style={[styles.iconCircle, { backgroundColor: theme.amberLight }]}>
+                        <Ionicons name="construct-outline" size={16} color={theme.amber} />
+                      </View>
+                    </View>
+                    <Text style={[styles.metricBigValue, { color: theme.amber }]}>
+                      R$ {stats.totalMaintenanceSpent.toFixed(2)}
+                    </Text>
+                    <Text style={[styles.metricSub, { color: theme.textMuted }]}>
+                      {stats.maintenancesCount} serviço(s) registrado(s)
+                    </Text>
+                  </TouchableOpacity>
                 </View>
-              </View>
+              </>
             )}
 
             {/* ALERTA DE PREVISÃO INTELIGENTE */}
             {forecast && (
               <TouchableOpacity
-                style={[styles.forecastBanner, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+                style={[
+                  styles.forecastBanner,
+                  { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                ]}
                 onPress={() => router.push('/previsao')}
               >
                 <View style={styles.forecastHeader}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <Ionicons name="trending-up" size={20} color="#10B981" />
-                    <Text style={[styles.forecastTitle, { color: theme.text }]}>Previsão para 30 Dias</Text>
+                    <Text style={[styles.forecastTitle, { color: theme.text }]}>
+                      Previsão para 30 Dias
+                    </Text>
                   </View>
                   <View style={styles.tagBadge}>
                     <Text style={styles.tagBadgeText}>~{forecast.averageDailyKm} km/dia</Text>
@@ -620,13 +878,17 @@ export default function DashboardScreen() {
                 </View>
                 <View style={styles.forecastRow}>
                   <View>
-                    <Text style={[styles.forecastLabel, { color: theme.textMuted }]}>Custo Estimado Total:</Text>
+                    <Text style={[styles.forecastLabel, { color: theme.textMuted }]}>
+                      Custo Estimado Total:
+                    </Text>
                     <Text style={[styles.forecastAmount, { color: theme.accent }]}>
                       R$ {forecast.totalProjectedCost30Days.toFixed(2)}
                     </Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={[styles.forecastLabel, { color: theme.textMuted }]}>Combustível:</Text>
+                    <Text style={[styles.forecastLabel, { color: theme.textMuted }]}>
+                      Combustível:
+                    </Text>
                     <Text style={[styles.forecastSubAmount, { color: theme.text }]}>
                       R$ {forecast.projected30DaysCost.toFixed(2)}
                     </Text>
@@ -639,7 +901,9 @@ export default function DashboardScreen() {
             {urgentAlerts.length > 0 && (
               <View style={styles.sectionContainer}>
                 <View style={styles.sectionHeader}>
-                  <Text style={[styles.sectionTitle, { color: theme.text }]}>Alertas de Revisão</Text>
+                  <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                    Alertas de Revisão
+                  </Text>
                   <TouchableOpacity onPress={() => router.push('/manutencoes')}>
                     <Text style={[styles.sectionLink, { color: theme.accent }]}>Ver todas</Text>
                   </TouchableOpacity>
@@ -666,13 +930,15 @@ export default function DashboardScreen() {
                         color={isRed ? theme.red : theme.amber}
                       />
                       <View style={{ flex: 1 }}>
-                        <Text style={[styles.alertTitle, { color: theme.text }]}>{alert.title}</Text>
+                        <Text style={[styles.alertTitle, { color: theme.text }]}>
+                          {alert.title}
+                        </Text>
                         <Text style={[styles.alertDesc, { color: theme.textMuted }]}>
                           {isVencido
                             ? `Atrasado há ${Math.abs(alert.kmRemaining || 0).toLocaleString('pt-BR')} km!`
                             : isAlerta
-                              ? `Alerta: faltam apenas ${alert.kmRemaining?.toLocaleString('pt-BR')} km`
-                              : `Atenção: faltam ${alert.kmRemaining?.toLocaleString('pt-BR')} km`}
+                            ? `Alerta: faltam apenas ${alert.kmRemaining?.toLocaleString('pt-BR')} km`
+                            : `Atenção: faltam ${alert.kmRemaining?.toLocaleString('pt-BR')} km`}
                         </Text>
                       </View>
                       <Text style={[styles.alertCost, { color: theme.text }]}>
@@ -688,24 +954,35 @@ export default function DashboardScreen() {
             {lastRefueling && (
               <View style={styles.sectionContainer}>
                 <View style={styles.sectionHeader}>
-                  <Text style={[styles.sectionTitle, { color: theme.text }]}>Último Abastecimento</Text>
+                  <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                    Último Abastecimento
+                  </Text>
                   <TouchableOpacity onPress={() => router.push('/abastecimentos')}>
                     <Text style={[styles.sectionLink, { color: theme.accent }]}>Histórico</Text>
                   </TouchableOpacity>
                 </View>
 
-                <View style={[styles.historyCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+                <View
+                  style={[
+                    styles.historyCard,
+                    { backgroundColor: theme.card, borderColor: theme.cardBorder },
+                  ]}
+                >
                   <View style={styles.historyRow}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                      <View style={[styles.fuelIconBadge, { backgroundColor: theme.accentLight }]}>
+                      <View
+                        style={[styles.fuelIconBadge, { backgroundColor: theme.accentLight }]}
+                      >
                         <Ionicons name="water" size={18} color={theme.accent} />
                       </View>
                       <View>
                         <Text style={[styles.historyTitle, { color: theme.text }]}>
-                          {lastRefueling.fuelType.toUpperCase()} • {lastRefueling.liters.toFixed(2)} L
+                          {lastRefueling.fuelType.toUpperCase()} •{' '}
+                          {lastRefueling.liters.toFixed(2)} L
                         </Text>
                         <Text style={[styles.historySubtitle, { color: theme.textMuted }]}>
-                          {formatDateToBR(lastRefueling.date)} • {lastRefueling.odometer.toLocaleString('pt-BR')} km
+                          {formatDateToBR(lastRefueling.date)} •{' '}
+                          {lastRefueling.odometer.toLocaleString('pt-BR')} km
                         </Text>
                       </View>
                     </View>
@@ -725,11 +1002,17 @@ export default function DashboardScreen() {
             )}
           </>
         ) : (
-          <View style={[styles.emptyCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+          <View
+            style={[
+              styles.emptyCard,
+              { backgroundColor: theme.card, borderColor: theme.cardBorder },
+            ]}
+          >
             <Ionicons name="car-sport-outline" size={52} color={theme.textMuted} />
             <Text style={[styles.emptyTitle, { color: theme.text }]}>Nenhum veículo ativo</Text>
             <Text style={[styles.emptySubtitle, { color: theme.textMuted }]}>
-              Cadastre ou selecione um veículo na Garagem para começar a monitorar seus abastecimentos e manutenções.
+              Cadastre ou selecione um veículo na Garagem para começar a monitorar seus
+              abastecimentos e manutenções.
             </Text>
             <TouchableOpacity
               style={[styles.emptyBtn, { backgroundColor: theme.accent }]}
@@ -745,14 +1028,23 @@ export default function DashboardScreen() {
       {/* MODAL PARA ATUALIZAR ODÔMETRO */}
       <Modal visible={odometerModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+          <View
+            style={[
+              styles.modalContent,
+              { backgroundColor: theme.card, borderColor: theme.cardBorder },
+            ]}
+          >
             <Text style={[styles.modalTitle, { color: theme.text }]}>Atualizar Odômetro</Text>
             <Text style={[styles.modalDesc, { color: theme.textMuted }]}>
-              Insira a quilometragem atual do painel do seu veículo para atualizar as previsões e alertas:
+              Insira a quilometragem atual do painel do seu veículo para atualizar as previsões e
+              alertas:
             </Text>
 
             <TextInput
-              style={[styles.modalInput, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+              style={[
+                styles.modalInput,
+                { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder },
+              ]}
               keyboardType="numeric"
               value={newOdometerInput}
               onChangeText={setNewOdometerInput}
@@ -762,7 +1054,10 @@ export default function DashboardScreen() {
 
             <View style={styles.modalBtnRow}>
               <TouchableOpacity
-                style={[styles.modalBtnCancel, { borderColor: theme.cardBorder, opacity: savingOdometer ? 0.5 : 1 }]}
+                style={[
+                  styles.modalBtnCancel,
+                  { borderColor: theme.cardBorder, opacity: savingOdometer ? 0.5 : 1 },
+                ]}
                 disabled={savingOdometer}
                 onPress={() => !savingOdometer && setOdometerModalVisible(false)}
               >
@@ -851,6 +1146,32 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
+  offlinePendingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  offlinePendingIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offlinePendingTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  offlinePendingSubtitle: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 1,
+  },
   garageBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -890,57 +1211,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  vehicleCard: {
-    padding: 16,
-    borderRadius: 18,
-    borderWidth: 1,
-    gap: 14,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 2,
-  },
-  vehicleHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  vehicleIconBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  vehiclePhotoAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-  },
-  vehicleName: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  vehicleModel: {
-    fontSize: 12,
-    marginTop: 2,
-  },
-  plateBadge: {
-    backgroundColor: '#0F172A',
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  plateText: {
-    color: '#FFFFFF',
-    fontWeight: 'bold',
-    fontSize: 12,
-    letterSpacing: 1,
-  },
-  // CARD DE ODÔMETRO (ATUALIZAÇÃO RÁPIDA)
   odometerCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -994,47 +1264,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  // VEÍCULO ÚNICO
-  singleVehicleCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 12,
-  },
-  singleVehicleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  singleVehicleAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-  },
-  singleVehicleIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  singleVehicleName: {
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  singleVehicleModel: {
-    fontSize: 12,
-    marginTop: 2,
-  },
   metricsGrid: {
     flexDirection: 'row',
     gap: 12,
   },
   metricCard: {
     flex: 1,
-    padding: 16,
+    padding: 14,
     borderRadius: 18,
     borderWidth: 1,
-    gap: 8,
+    gap: 6,
   },
   metricHeader: {
     flexDirection: 'row',
@@ -1053,7 +1292,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   metricBigValue: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '900',
     letterSpacing: -0.5,
   },
@@ -1284,7 +1523,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
-  // ÁREA SUPERIOR FIXA
   fixedHeaderArea: {
     paddingHorizontal: 16,
     paddingTop: 4,
@@ -1292,7 +1530,6 @@ const styles = StyleSheet.create({
     gap: 8,
     zIndex: 10,
   },
-  // SELETOR COMPACTO DE VEÍCULOS
   compactSelectorCard: {
     borderRadius: 14,
     borderWidth: 1,
