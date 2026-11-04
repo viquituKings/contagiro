@@ -446,125 +446,6 @@ export function mapFirestoreDocToMaintenance(
   };
 }
 
-// Dados de demonstração realistas para inicialização sem conta logada
-const DEMO_VEHICLES: Vehicle[] = [
-  {
-    id: 'veh-1',
-    name: 'Onix Plus Turbo',
-    model: 'Chevrolet Onix Plus Premier 1.0 Turbo',
-    plate: 'BRA-2E19',
-    year: 2023,
-    tankCapacity: 44,
-    currentOdometer: 38450,
-    fuelType: 'gasolina',
-    flexEfficiencyRatio: 0.70,
-    order: 0,
-    isPreferred: true,
-  },
-  {
-    id: 'veh-2',
-    name: 'Mobi Drive',
-    model: 'Fiat Mobi 1.0 Firefly',
-    plate: 'RTO-4A88',
-    year: 2021,
-    tankCapacity: 47,
-    currentOdometer: 62100,
-    fuelType: 'etanol',
-    flexEfficiencyRatio: 0.72,
-    order: 1,
-    isPreferred: false,
-  },
-];
-
-const DEMO_REFUELINGS: Refueling[] = [
-  {
-    id: 'ref-1',
-    vehicleId: 'veh-1',
-    date: '2026-10-01',
-    odometer: 37520,
-    fuelType: 'gasolina',
-    pricePerLiter: 5.89,
-    totalAmount: 235.60,
-    liters: 40.0,
-    isFullTank: true,
-    gasStation: 'Posto Shell Ipiranga',
-    notes: 'Tanque cheio inicial',
-  },
-  {
-    id: 'ref-2',
-    vehicleId: 'veh-1',
-    date: '2026-10-11',
-    odometer: 38000,
-    fuelType: 'gasolina',
-    pricePerLiter: 5.92,
-    totalAmount: 236.80,
-    liters: 40.0,
-    isFullTank: true,
-    gasStation: 'Posto Ipiranga Centro',
-    distanceTraveled: 480,
-    consumptionKmPerLiter: 12.0,
-    costPerKm: 0.49,
-    notes: 'Uso 80% cidade / 20% estrada',
-  },
-  {
-    id: 'ref-3',
-    vehicleId: 'veh-1',
-    date: '2026-10-21',
-    odometer: 38450,
-    fuelType: 'gasolina',
-    pricePerLiter: 5.85,
-    totalAmount: 204.75,
-    liters: 35.0,
-    isFullTank: true,
-    gasStation: 'Posto Petrobras BR',
-    distanceTraveled: 450,
-    consumptionKmPerLiter: 12.86,
-    costPerKm: 0.45,
-    notes: 'Boa autonomia com ar ligado moderado',
-  },
-];
-
-const DEMO_MAINTENANCES: MaintenanceItem[] = [
-  {
-    id: 'mnt-1',
-    vehicleId: 'veh-1',
-    date: '2026-05-10',
-    odometer: 30000,
-    category: 'oleo_filtro',
-    title: 'Troca de Óleo 5W30 + Filtros (Óleo, Ar, Combustível)',
-    workshop: 'Oficina Padrão Bosch',
-    cost: 380.00,
-    nextDueOdometer: 40000,
-    nextDueDate: '2026-11-10',
-    isCompleted: true,
-  },
-  {
-    id: 'mnt-2',
-    vehicleId: 'veh-1',
-    date: '2026-08-15',
-    odometer: 34500,
-    category: 'suspensao',
-    title: 'Alinhamento 3D + Balanceamento 4 Rodas',
-    workshop: 'Pneus & Cia',
-    cost: 140.00,
-    nextDueOdometer: 44500,
-    nextDueDate: '2027-02-15',
-    isCompleted: true,
-  },
-  {
-    id: 'mnt-3',
-    vehicleId: 'veh-1',
-    date: '2026-10-15',
-    odometer: 38450,
-    category: 'freios',
-    title: 'Revisão das Pastilhas de Freio Dianteiras',
-    workshop: 'Oficina Padrão Bosch',
-    cost: 290.00,
-    nextDueOdometer: 58000,
-    isCompleted: true,
-  },
-];
-
 export function sortVehiclesByOrder(vehicles: Vehicle[], preferredId?: string | null): Vehicle[] {
   return [...vehicles].sort((a, b) => {
     const aPref = a.isPreferred || (preferredId ? a.id === preferredId : false);
@@ -608,6 +489,32 @@ async function getVehicleTotalizersFromCacheMap(): Promise<Record<string, Vehicl
   }
 }
 
+/**
+ * Identifica se um veículo pertence à massa de dados de teste/demonstração antiga (Onix Plus Turbo / Mobi Drive)
+ */
+export function isDemoVehicle(v?: { id?: string; name?: string; model?: string } | null): boolean {
+  if (!v) return false;
+  const id = v.id || '';
+  const name = (v.name || '').toLowerCase().trim();
+  const model = (v.model || '').toLowerCase().trim();
+  if (id === 'veh-1' || id === 'veh-2') return true;
+  if (name.includes('onix plus turbo') || name.includes('mobi drive')) return true;
+  if (model.includes('onix plus turbo') || model.includes('mobi drive')) return true;
+  return false;
+}
+
+/**
+ * Identifica se um lançamento pertence aos dados de demonstração antigos
+ */
+export function isDemoRecord(r?: { id?: string; vehicleId?: string } | null): boolean {
+  if (!r) return false;
+  const id = r.id || '';
+  const vId = r.vehicleId || '';
+  if (vId === 'veh-1' || vId === 'veh-2') return true;
+  if (id === 'ref-1' || id === 'ref-2' || id === 'mnt-1' || id === 'mnt-2' || id === 'mnt-3') return true;
+  return false;
+}
+
 export const StorageService = {
   /**
    * Verifica rapidamente se há conectividade com a nuvem
@@ -644,7 +551,8 @@ export const StorageService = {
       const json = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
       const preferredId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
       const list: Vehicle[] = json ? JSON.parse(json) : [];
-      return sortVehiclesByOrder(list, preferredId);
+      const sanitized = list.filter((v) => !isDemoVehicle(v));
+      return sortVehiclesByOrder(sanitized, preferredId);
     } catch {
       return [];
     }
@@ -653,18 +561,20 @@ export const StorageService = {
   async getCachedRefuelings(vehicleId?: string): Promise<Refueling[]> {
     try {
       if (vehicleId) {
+        if (vehicleId === 'veh-1' || vehicleId === 'veh-2') return [];
         const cached = await AsyncStorage.getItem(STORAGE_KEYS.REFUELINGS + '_' + vehicleId);
         if (cached) {
           const parsed: Refueling[] = JSON.parse(cached);
-          return sortRefuelingsDesc(parsed);
+          return sortRefuelingsDesc(parsed.filter((r) => !isDemoRecord(r)));
         }
       }
       const json = await AsyncStorage.getItem(STORAGE_KEYS.REFUELINGS);
       const all: Refueling[] = json ? JSON.parse(json) : [];
+      const filtered = all.filter((r) => !isDemoRecord(r));
       if (vehicleId) {
-        return sortRefuelingsDesc(all.filter((r) => r.vehicleId === vehicleId));
+        return sortRefuelingsDesc(filtered.filter((r) => r.vehicleId === vehicleId));
       }
-      return sortRefuelingsDesc(all);
+      return sortRefuelingsDesc(filtered);
     } catch {
       return [];
     }
@@ -673,41 +583,76 @@ export const StorageService = {
   async getCachedMaintenances(vehicleId?: string): Promise<MaintenanceItem[]> {
     try {
       if (vehicleId) {
+        if (vehicleId === 'veh-1' || vehicleId === 'veh-2') return [];
         const cached = await AsyncStorage.getItem(STORAGE_KEYS.MAINTENANCES + '_' + vehicleId);
         if (cached) {
           const parsed: MaintenanceItem[] = JSON.parse(cached);
-          return sortMaintenancesDesc(parsed);
+          return sortMaintenancesDesc(parsed.filter((m) => !isDemoRecord(m)));
         }
       }
       const json = await AsyncStorage.getItem(STORAGE_KEYS.MAINTENANCES);
       const all: MaintenanceItem[] = json ? JSON.parse(json) : [];
+      const filtered = all.filter((m) => !isDemoRecord(m));
       if (vehicleId) {
-        return sortMaintenancesDesc(all.filter((m) => m.vehicleId === vehicleId));
+        return sortMaintenancesDesc(filtered.filter((m) => m.vehicleId === vehicleId));
       }
-      return sortMaintenancesDesc(all);
+      return sortMaintenancesDesc(filtered);
     } catch {
       return [];
     }
   },
 
-  // Inicialização de semente e pré-carregamento offline
+  // Inicialização e sanitização de vestígios antigos
   async init(): Promise<void> {
     try {
+      // 1. Sanitização proativa: limpa completamente qualquer vestígio de veículos de teste (veh-1, veh-2)
+      try {
+        const rawVehicles = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+        if (rawVehicles) {
+          const list: Vehicle[] = JSON.parse(rawVehicles);
+          const sanitized = list.filter((v) => !isDemoVehicle(v));
+          if (sanitized.length !== list.length) {
+            await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(sanitized));
+          }
+        }
+
+        const activeId = await AsyncStorage.getItem(STORAGE_KEYS.ACTIVE_VEHICLE);
+        if (activeId === 'veh-1' || activeId === 'veh-2') {
+          await AsyncStorage.removeItem(STORAGE_KEYS.ACTIVE_VEHICLE);
+        }
+
+        const prefId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+        if (prefId === 'veh-1' || prefId === 'veh-2') {
+          await AsyncStorage.removeItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+        }
+
+        const allKeys = await AsyncStorage.getAllKeys();
+        const demoKeys = allKeys.filter(
+          (k) =>
+            k.includes('veh-1') ||
+            k.includes('veh-2') ||
+            k === '@contagiro:refuelings_v1_veh-1' ||
+            k === '@contagiro:refuelings_v1_veh-2' ||
+            k === '@contagiro:maintenances_v1_veh-1' ||
+            k === '@contagiro:maintenances_v1_veh-2'
+        );
+        if (demoKeys.length > 0) {
+          await AsyncStorage.multiRemove(demoKeys);
+        }
+
+        // Garante que a flag de seeded fique marcada sem criar nada fictício
+        await AsyncStorage.setItem(STORAGE_KEYS.HAS_SEEDED, 'true');
+      } catch (cleanErr) {
+        console.warn('Aviso: falha na sanitização de dados demo em init:', cleanErr);
+      }
+
+      // 2. Se há usuário conectado, pré-carrega os dados do Firestore
       if (auth.currentUser?.email) {
         if (!hasPreloadedOfflineData && !isPreloading) {
           this.preloadOfflineData().catch((err) => {
             console.warn('Aviso: Erro em preloadOfflineData durante init:', err);
           });
         }
-        return;
-      }
-      const seeded = await AsyncStorage.getItem(STORAGE_KEYS.HAS_SEEDED);
-      if (!seeded) {
-        await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(DEMO_VEHICLES));
-        await AsyncStorage.setItem(STORAGE_KEYS.ACTIVE_VEHICLE, DEMO_VEHICLES[0].id);
-        await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS, JSON.stringify(DEMO_REFUELINGS));
-        await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(DEMO_MAINTENANCES));
-        await AsyncStorage.setItem(STORAGE_KEYS.HAS_SEEDED, 'true');
       }
     } catch (e) {
       console.error('Erro ao inicializar StorageService:', e);
@@ -725,9 +670,18 @@ export const StorageService = {
         );
         let list: Vehicle[] = [];
         if (!querySnapshot.empty) {
-          list = querySnapshot.docs.map((d) =>
-            mapFirestoreDocToVehicle(d.id, d.data() as Record<string, unknown>)
-          );
+          for (const d of querySnapshot.docs) {
+            const docData = d.data() as Record<string, unknown>;
+            const veh = mapFirestoreDocToVehicle(d.id, docData);
+            if (isDemoVehicle(veh)) {
+              withFirestoreTimeout(
+                () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', d.id)),
+                1500
+              ).catch(() => {});
+            } else {
+              list.push(veh);
+            }
+          }
         }
 
         const cachedList = await this.getCachedVehicles();
@@ -743,7 +697,10 @@ export const StorageService = {
         for (const q of queue) {
           if (q.userEmail !== userKey) continue;
           if (q.action === 'SAVE_VEHICLE') {
-            pendingVehicleSaves.set(q.entityId, q.payload as Vehicle);
+            const pVeh = q.payload as Vehicle;
+            if (!isDemoVehicle(pVeh)) {
+              pendingVehicleSaves.set(q.entityId, pVeh);
+            }
           } else if (q.action === 'SAVE_PERIODIC_CONFIG') {
             const p = q.payload as { vehicleId?: string; config?: Record<string, unknown> };
             const vId = p.vehicleId || q.entityId;
@@ -752,16 +709,17 @@ export const StorageService = {
             }
           } else if (q.action === 'ADD_REFUELING') {
             const r = q.payload as Refueling;
-            if (r?.vehicleId) vehiclesWithPendingRefuelings.add(r.vehicleId);
+            if (r?.vehicleId && !isDemoRecord(r)) vehiclesWithPendingRefuelings.add(r.vehicleId);
           } else if (q.action === 'ADD_MAINTENANCE') {
             const m = q.payload as MaintenanceItem;
-            if (m?.vehicleId) vehiclesWithPendingMaintenances.add(m.vehicleId);
+            if (m?.vehicleId && !isDemoRecord(m)) vehiclesWithPendingMaintenances.add(m.vehicleId);
           }
         }
 
         // GARANTIA DE NÃO-SOBREPOSIÇÃO OFFLINE:
         // Nenhum dado do Firestore pode sobrescrever o que foi inserido no app quando sem rede.
         for (const [vId, pv] of pendingVehicleSaves.entries()) {
+          if (isDemoVehicle(pv)) continue;
           const idx = list.findIndex((v) => v.id === vId);
           if (idx >= 0) {
             const fsVeh = list[idx];
@@ -777,7 +735,11 @@ export const StorageService = {
 
         // Também preserva veículos criados offline (veh-...) que estejam no cache local
         for (const cachedVeh of cachedList) {
-          if (cachedVeh.id.startsWith('veh-') && !list.some((v) => v.id === cachedVeh.id)) {
+          if (
+            cachedVeh.id.startsWith('veh-') &&
+            !isDemoVehicle(cachedVeh) &&
+            !list.some((v) => v.id === cachedVeh.id)
+          ) {
             list.push(cachedVeh);
           }
         }
@@ -913,6 +875,14 @@ export const StorageService = {
     }
 
     return this.getCachedVehicles();
+  },
+
+  async getVehicleById(id: string): Promise<Vehicle | null> {
+    const list = await this.getVehicles();
+    const found = list.find((v) => v.id === id);
+    if (found) return found;
+    const cached = await this.getCachedVehicles();
+    return cached.find((v) => v.id === id) || null;
   },
 
   async saveVehicle(vehicle: Vehicle): Promise<void> {
@@ -1084,7 +1054,10 @@ export const StorageService = {
   async getActiveVehicleId(): Promise<string | null> {
     try {
       const activeId = await AsyncStorage.getItem(STORAGE_KEYS.ACTIVE_VEHICLE);
-      if (activeId) return activeId;
+      if (activeId && activeId !== 'veh-1' && activeId !== 'veh-2') {
+        const cached = await this.getCachedVehicles();
+        if (cached.some((v) => v.id === activeId)) return activeId;
+      }
       const list = await this.getCachedVehicles();
       if (list.length > 0) {
         await this.setActiveVehicleId(list[0].id);
@@ -1110,7 +1083,10 @@ export const StorageService = {
   async getPreferredVehicleId(): Promise<string | null> {
     try {
       const prefId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
-      if (prefId) return prefId;
+      if (prefId && prefId !== 'veh-1' && prefId !== 'veh-2') {
+        const cached = await this.getCachedVehicles();
+        if (cached.some((v) => v.id === prefId)) return prefId;
+      }
       const list = await this.getCachedVehicles();
       const preferred = list.find((v) => v.isPreferred) || list[0];
       return preferred?.id || null;
@@ -1429,7 +1405,10 @@ export const StorageService = {
       for (const q of queue) {
         if (q.userEmail !== userKey) continue;
         if (q.action === 'SAVE_VEHICLE') {
-          pendingVehicleSaves.set(q.entityId, q.payload as Vehicle);
+          const pVeh = q.payload as Vehicle;
+          if (!isDemoVehicle(pVeh)) {
+            pendingVehicleSaves.set(q.entityId, pVeh);
+          }
         } else if (q.action === 'SAVE_PERIODIC_CONFIG') {
           const p = q.payload as { vehicleId?: string; config?: Record<string, unknown> };
           const vId = p.vehicleId || q.entityId;
@@ -1444,12 +1423,22 @@ export const StorageService = {
       );
 
       const cachedVehicles = await this.getCachedVehicles();
-      let vehicles: Vehicle[] = vehSnap.docs.map((d) =>
-        mapFirestoreDocToVehicle(d.id, d.data() as Record<string, unknown>)
-      );
+      let vehicles: Vehicle[] = [];
+      for (const d of vehSnap.docs) {
+        const v = mapFirestoreDocToVehicle(d.id, d.data() as Record<string, unknown>);
+        if (isDemoVehicle(v)) {
+          withFirestoreTimeout(
+            () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', d.id)),
+            1500
+          ).catch(() => {});
+        } else {
+          vehicles.push(v);
+        }
+      }
 
       // Mescla veículos criados/editados offline sem deixar o Firestore sobrepor
       for (const [vId, pv] of pendingVehicleSaves.entries()) {
+        if (isDemoVehicle(pv)) continue;
         const idx = vehicles.findIndex((v) => v.id === vId);
         if (idx >= 0) {
           const fsVeh = vehicles[idx];
@@ -1463,7 +1452,11 @@ export const StorageService = {
         }
       }
       for (const cv of cachedVehicles) {
-        if (cv.id.startsWith('veh-') && !vehicles.some((v) => v.id === cv.id)) {
+        if (
+          cv.id.startsWith('veh-') &&
+          !isDemoVehicle(cv) &&
+          !vehicles.some((v) => v.id === cv.id)
+        ) {
           vehicles.push(cv);
         }
       }
@@ -1477,9 +1470,18 @@ export const StorageService = {
           () => getDocs(collection(db, 'users', userEmail, 'manutencoes')),
           2000
         );
-        allMaintenancesFull = maintSnap.docs.map((d) =>
-          mapFirestoreDocToMaintenance(d.id, d.data())
-        );
+        allMaintenancesFull = maintSnap.docs
+          .map((d) => {
+            const m = mapFirestoreDocToMaintenance(d.id, d.data());
+            if (isDemoRecord(m)) {
+              withFirestoreTimeout(
+                () => deleteDoc(doc(db, 'users', userEmail, 'manutencoes', d.id)),
+                1500
+              ).catch(() => {});
+            }
+            return m;
+          })
+          .filter((m) => !isDemoRecord(m));
 
         // Limpa duplicatas existentes no Firestore
         const { unique: dedupedMnts, duplicateIds: dupMntIds } =
@@ -1798,10 +1800,14 @@ export const StorageService = {
         const userKey = userEmail.toLowerCase().trim();
         const allPendingAdds = queue
           .filter((q) => q.action === 'ADD_REFUELING' && q.userEmail === userKey)
-          .map((q) => q.payload as Refueling);
+          .map((q) => q.payload as Refueling)
+          .filter((r) => !isDemoRecord(r));
         const pendingIds = new Set(allPendingAdds.map((r) => r.id));
 
         if (vehicleId) {
+          if (vehicleId === 'veh-1' || vehicleId === 'veh-2') {
+            return [];
+          }
           if (vehicleId.startsWith('veh-')) {
             return this.getCachedRefuelings(vehicleId);
           }
@@ -1811,9 +1817,21 @@ export const StorageService = {
               getDocs(collection(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos')),
             1500
           );
-          let list: Refueling[] = subSnap.docs.map((d) =>
-            mapFirestoreDocToRefueling(d.id, { ...d.data(), idVeiculo: vehicleId })
-          );
+          let list: Refueling[] = subSnap.docs
+            .map((d) => {
+              const r = mapFirestoreDocToRefueling(d.id, { ...d.data(), idVeiculo: vehicleId });
+              if (isDemoRecord(r)) {
+                withFirestoreTimeout(
+                  () =>
+                    deleteDoc(
+                      doc(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos', d.id)
+                    ),
+                  1500
+                ).catch(() => {});
+              }
+              return r;
+            })
+            .filter((r) => !isDemoRecord(r));
 
           // Limpa duplicatas no Firestore se existirem
           const { unique: dedupedFsList, duplicateIds: dupFsIds } = deduplicateRefuelings(list);
@@ -2244,9 +2262,18 @@ export const StorageService = {
           () => getDocs(collection(db, 'users', userEmail, 'manutencoes')),
           1500
         );
-        let list: MaintenanceItem[] = snap.docs.map((d) =>
-          mapFirestoreDocToMaintenance(d.id, d.data())
-        );
+        let list: MaintenanceItem[] = snap.docs
+          .map((d) => {
+            const m = mapFirestoreDocToMaintenance(d.id, d.data());
+            if (isDemoRecord(m)) {
+              withFirestoreTimeout(
+                () => deleteDoc(doc(db, 'users', userEmail, 'manutencoes', d.id)),
+                1500
+              ).catch(() => {});
+            }
+            return m;
+          })
+          .filter((m) => !isDemoRecord(m));
 
         // Limpa duplicatas no Firestore se existirem
         const { unique: dedupedFsMnts, duplicateIds: dupFsMntIds } = deduplicateMaintenances(list);
@@ -2264,7 +2291,8 @@ export const StorageService = {
         const userKey = userEmail.toLowerCase().trim();
         const pendingAdds = queue
           .filter((q) => q.action === 'ADD_MAINTENANCE' && q.userEmail === userKey)
-          .map((q) => q.payload as MaintenanceItem);
+          .map((q) => q.payload as MaintenanceItem)
+          .filter((m) => !isDemoRecord(m));
         const pendingIds = new Set(pendingAdds.map((m) => m.id));
 
         for (const pa of pendingAdds) {
@@ -2900,11 +2928,47 @@ export const StorageService = {
     }
   },
 
-  // RESET
+  /**
+   * Limpa todo o cache de sessão local (veículos, totalizadores, abastecimentos, manutenções).
+   * Deve ser chamado no logout, no login de novo usuário e no cadastro para evitar
+   * que um usuário visualize dados ou vestígios de contas anteriores ou mocks antigos.
+   */
+  async clearSessionCache(): Promise<void> {
+    try {
+      hasPreloadedOfflineData = false;
+      isPreloading = false;
+      hasCheckedLegacyMedias = false;
+
+      const allKeys = await AsyncStorage.getAllKeys();
+      const keysToRemove = allKeys.filter(
+        (k) =>
+          k.startsWith('@contagiro:vehicles') ||
+          k.startsWith('@contagiro:vehicle_') ||
+          k.startsWith('@contagiro:refuelings') ||
+          k.startsWith('@contagiro:maintenances') ||
+          k.startsWith('@contagiro:active_vehicle') ||
+          k.startsWith('@contagiro:preferred_vehicle') ||
+          k.includes('veh-1') ||
+          k.includes('veh-2') ||
+          k === STORAGE_KEYS.VEHICLES ||
+          k === STORAGE_KEYS.ACTIVE_VEHICLE ||
+          k === STORAGE_KEYS.PREFERRED_VEHICLE ||
+          k === STORAGE_KEYS.REFUELINGS ||
+          k === STORAGE_KEYS.MAINTENANCES ||
+          k === STORAGE_KEYS.VEHICLE_TOTALIZERS ||
+          k === STORAGE_KEYS.HAS_SEEDED
+      );
+
+      if (keysToRemove.length > 0) {
+        await AsyncStorage.multiRemove(keysToRemove);
+      }
+    } catch (e) {
+      console.warn('Aviso: erro ao limpar cache de sessão:', e);
+    }
+  },
+
+  // RESET / LIMPEZA COMPLETA DE CACHE DE SESSÃO
   async resetDemo(): Promise<void> {
-    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(DEMO_VEHICLES));
-    await AsyncStorage.setItem(STORAGE_KEYS.ACTIVE_VEHICLE, DEMO_VEHICLES[0].id);
-    await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS, JSON.stringify(DEMO_REFUELINGS));
-    await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(DEMO_MAINTENANCES));
+    await this.clearSessionCache();
   },
 };

@@ -4,8 +4,8 @@ export type VehicleType = 'carro' | 'moto';
 
 export interface Vehicle {
   id: string;
-  name: string; // Ex: "Onix Turbo" ou "Gol"
-  model: string; // Ex: "Chevrolet Onix 1.0 Turbo"
+  name: string; // Ex: "Gol 1.0" ou "Corolla"
+  model: string; // Ex: "Volkswagen Gol 1.0"
   brand?: string; // Ex: "Chevrolet", "Volkswagen"
   plate: string; // Ex: "BRA2E19" ou "JFJ-1254"
   year: number; // Ex: 2023

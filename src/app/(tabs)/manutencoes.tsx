@@ -258,7 +258,10 @@ export default function MaintenancesScreen() {
     }
   };
 
-  const handleOpenMaintenanceModal = (preselectedCategory?: MaintenanceCategory) => {
+  const handleOpenMaintenanceModal = (
+    preselectedCategory?: MaintenanceCategory,
+    customTitle?: string
+  ) => {
     if (isSwitchingVehicle) return;
     if (!vehicle) {
       Alert.alert('Atenção', 'Cadastre ou selecione um veículo primeiro.');
@@ -266,6 +269,9 @@ export default function MaintenancesScreen() {
     }
     const catToUse = preselectedCategory || 'oleo_filtro';
     handleSelectCategory(catToUse);
+    if (customTitle) {
+      setTitle(customTitle);
+    }
     setCost('');
     setWorkshop('');
     setOdometer(String(vehicle.currentOdometer || 0));
@@ -936,8 +942,10 @@ export default function MaintenancesScreen() {
                 const badgeText = isVencido ? 'VENCIDO' : isAlerta ? 'ALERTA' : isAtencao ? 'ATENÇÃO' : 'EM DIA';
 
                 return (
-                  <View
+                  <TouchableOpacity
                     key={idx}
+                    activeOpacity={0.7}
+                    onPress={() => handleOpenMaintenanceModal(item.category, item.title)}
                     style={[
                       styles.alertCard,
                       {
@@ -974,7 +982,22 @@ export default function MaintenancesScreen() {
                         Estimado: R$ {item.estimatedCost.toFixed(2)}
                       </Text>
                     </View>
-                  </View>
+
+                    <View
+                      style={[
+                        styles.alertActionRow,
+                        { borderTopColor: isDark ? '#1E2D44' : '#F1F5F9' },
+                      ]}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        <Ionicons name="add-circle" size={15} color={theme.blue} />
+                        <Text style={[styles.alertActionText, { color: theme.blue }]}>
+                          Lançar esta manutenção
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={14} color={theme.blue} />
+                    </View>
+                  </TouchableOpacity>
                 );
               })}
             </View>
@@ -1938,6 +1961,18 @@ const styles = StyleSheet.create({
   },
   alertCostText: {
     fontSize: 11,
+  },
+  alertActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 8,
+    marginTop: 4,
+    borderTopWidth: 1,
+  },
+  alertActionText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   historyCard: {
     padding: 14,

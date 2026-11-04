@@ -362,6 +362,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loginWithEmail = async (email: string, pass: string) => {
+    await StorageService.clearSessionCache();
     await signInWithEmailAndPassword(auth, email.trim(), pass);
   };
 
@@ -371,6 +372,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     name: string,
     photoUrl?: string
   ) => {
+    await StorageService.clearSessionCache();
     const trimmedEmail = email.trim();
     const trimmedName = name.trim();
     const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, pass);
@@ -558,6 +560,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         const credential = GoogleAuthProvider.credential(idToken);
+        await StorageService.clearSessionCache();
         await signInWithCredential(auth, credential);
         return true;
       }
@@ -605,6 +608,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Ignora erro no logout nativo do Google
     }
+    await StorageService.clearSessionCache();
     await signOut(auth);
   };
 

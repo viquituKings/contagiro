@@ -48,14 +48,12 @@ export default function GarageScreen() {
   const { user, logout } = useAuth();
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
-  const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Formulário de Cadastro / Edição
+  // Formulário de Cadastro de Novo Veículo
   const [vehicleType, setVehicleType] = useState<VehicleType>('carro');
   const [brand, setBrand] = useState('');
   const [name, setName] = useState('');
@@ -103,22 +101,16 @@ export default function GarageScreen() {
     if (isPull) setRefreshing(true);
     else setLoading(true);
     try {
-      // 1. Exibe imediatamente todos os cadastros, avatares e totalizadores em cache
-      const [cachedList, cachedActive] = await Promise.all([
-        StorageService.getCachedVehicles(),
-        StorageService.getActiveVehicleId(),
-      ]);
+      // 1. Exibe imediatamente dados em cache
+      const cachedList = await StorageService.getCachedVehicles();
       if (cachedList.length > 0) {
         setVehicles(cachedList);
-        setActiveId(cachedActive || (cachedList[0]?.id ?? null));
         setLoading(false);
       }
 
       // 2. Sincroniza/atualiza com preservação de dados offline
       const list = await StorageService.getVehicles();
-      const curActive = await StorageService.getActiveVehicleId();
       setVehicles(list);
-      setActiveId(curActive || (list[0]?.id ?? null));
     } catch (err) {
       console.error('Erro ao carregar veículos:', err);
     } finally {
@@ -133,16 +125,10 @@ export default function GarageScreen() {
     }, [])
   );
 
-  const handleSelectActive = async (id: string) => {
-    await StorageService.setActiveVehicleId(id);
-    setActiveId(id);
-  };
-
   const handleSetPreferred = async (id: string) => {
     try {
       const updatedList = await StorageService.setPreferredVehicle(id);
       setVehicles(updatedList);
-      setActiveId(id);
     } catch (err) {
       console.error('Erro ao definir veículo preferido:', err);
     }
@@ -152,16 +138,12 @@ export default function GarageScreen() {
     try {
       const updatedList = await StorageService.moveVehicle(id, direction);
       setVehicles(updatedList);
-      if (updatedList.length > 0) {
-        setActiveId(updatedList[0].id);
-      }
     } catch (err) {
       console.error('Erro ao mover veículo:', err);
     }
   };
 
   const handleOpenAdd = () => {
-    setEditingVehicle(null);
     setVehicleType('carro');
     setName('');
     setModel('');
@@ -173,26 +155,6 @@ export default function GarageScreen() {
     setEngineDisplacement('');
     setAcceptedFuels(['gasolina', 'etanol']);
     setPhotoUrl(null);
-    setModalVisible(true);
-  };
-
-  const handleOpenEdit = (veh: Vehicle) => {
-    setEditingVehicle(veh);
-    setVehicleType(veh.vehicleType || 'carro');
-    setName(veh.name);
-    setModel(veh.model);
-    setBrand(veh.brand || '');
-    setPlate(veh.plate);
-    setYear(veh.year ? String(veh.year) : '');
-    setTankCapacity(veh.tankCapacity ? String(veh.tankCapacity) : '50');
-    setCurrentOdometer(veh.currentOdometer ? String(veh.currentOdometer) : '0');
-    setEngineDisplacement(veh.engineDisplacement ? String(parseEngineDisplacement(veh.engineDisplacement) ?? veh.engineDisplacement) : '');
-    setPhotoUrl(veh.photoUrl || null);
-    setAcceptedFuels(
-      veh.acceptedFuelTypes && veh.acceptedFuelTypes.length > 0
-        ? veh.acceptedFuelTypes
-        : [veh.fuelType || 'gasolina']
-    );
     setModalVisible(true);
   };
 
@@ -226,11 +188,11 @@ export default function GarageScreen() {
   const handleSave = async () => {
     if (saving) return;
 
-    if (!editingVehicle && !name.trim()) {
+    if (!name.trim()) {
       Alert.alert('Campo Obrigatório', 'Informe o modelo ou apelido do veículo.');
       return;
     }
-    if (!editingVehicle && !plate.trim()) {
+    if (!plate.trim()) {
       Alert.alert('Campo Obrigatório', 'Informe a placa do veículo.');
       return;
     }
@@ -246,101 +208,37 @@ export default function GarageScreen() {
       const tankNum = parseInt(tankCapacity, 10) || (vehicleType === 'moto' ? 14 : 50);
       const dispNum = parseEngineDisplacement(engineDisplacement);
 
-      if (editingVehicle) {
-        // Modo Edição: marca, modelo e placa não podem ser alterados!
-        // Preserva informações de manutenção periódica já existentes
-        const updatedVeh: Vehicle = {
-          ...editingVehicle,
-          name: editingVehicle.name,
-          model: editingVehicle.model,
-          brand: editingVehicle.brand,
-          plate: editingVehicle.plate,
-          year: yearNum,
-          tankCapacity: tankNum,
-          currentOdometer: odomNum,
-          fuelType: acceptedFuels[0] || 'gasolina',
-          acceptedFuelTypes: acceptedFuels,
-          vehicleType: editingVehicle.vehicleType || vehicleType,
-          engineDisplacement: dispNum,
-          photoUrl: photoUrl || undefined,
-          cadManPeriodica: editingVehicle.cadManPeriodica,
-          revisaoKm: editingVehicle.revisaoKm,
-          trocaOleoKm: editingVehicle.trocaOleoKm,
-          proxRevKm: editingVehicle.proxRevKm,
-          proxTrocaOleoKm: editingVehicle.proxTrocaOleoKm,
-          gastoManutencao: editingVehicle.gastoManutencao,
-        };
+      const formattedPlate = formatPlate(plate);
+      const newVeh: Vehicle = {
+        id: 'veh-' + Date.now(),
+        name: name.trim(),
+        model: model.trim() || (brand ? `${brand} ${name}`.trim() : name.trim()),
+        brand: brand.trim(),
+        plate: formattedPlate,
+        year: yearNum,
+        tankCapacity: tankNum,
+        currentOdometer: odomNum,
+        fuelType: acceptedFuels[0] || 'gasolina',
+        acceptedFuelTypes: acceptedFuels,
+        vehicleType,
+        engineDisplacement: dispNum,
+        photoUrl: photoUrl || undefined,
+        flexEfficiencyRatio: 0.70,
+        cadManPeriodica: false,
+        gastoManutencao: 0,
+      };
 
-        await StorageService.saveVehicle(updatedVeh);
-        Alert.alert('Sucesso', 'Informações do veículo atualizadas com sucesso!');
-      } else {
-        // Modo Criação:
-        // O ciclo de manutenção periódica será cadastrado futuramente na tela Oficina
-        const formattedPlate = formatPlate(plate);
-        const newVeh: Vehicle = {
-          id: 'veh-' + Date.now(),
-          name: name.trim(),
-          model: model.trim() || (brand ? `${brand} ${name}`.trim() : name.trim()),
-          brand: brand.trim(),
-          plate: formattedPlate,
-          year: yearNum,
-          tankCapacity: tankNum,
-          currentOdometer: odomNum,
-          fuelType: acceptedFuels[0] || 'gasolina',
-          acceptedFuelTypes: acceptedFuels,
-          vehicleType,
-          engineDisplacement: dispNum,
-          photoUrl: photoUrl || undefined,
-          flexEfficiencyRatio: 0.70,
-          cadManPeriodica: false,
-          gastoManutencao: 0,
-        };
-
-        await StorageService.saveVehicle(newVeh);
-        await StorageService.setActiveVehicleId(newVeh.id);
-      }
+      await StorageService.saveVehicle(newVeh);
+      await StorageService.setActiveVehicleId(newVeh.id);
 
       setModalVisible(false);
       await loadData();
     } catch (err) {
       console.error('Erro ao salvar veículo:', err);
-      Alert.alert('Erro', 'Ocorreu um erro ao salvar o veículo. Tente novamente.');
+      Alert.alert('Erro', 'Ocorreu um erro ao cadastrar o veículo. Tente novamente.');
     } finally {
       setSaving(false);
     }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (vehicles.length <= 1) {
-      Alert.alert('Atenção', 'Você precisa ter pelo menos um veículo cadastrado.');
-      return;
-    }
-    const online = await StorageService.checkOnlineStatus(true);
-    if (!online) {
-      Alert.alert(
-        'Modo Offline',
-        'Não é possível excluir veículos do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
-      );
-      return;
-    }
-    Alert.alert('Remover Veículo', 'Deseja excluir este veículo da sua garagem e do banco de dados?', [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Excluir',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await StorageService.deleteVehicle(id);
-            await loadData();
-          } catch (err: any) {
-            Alert.alert(
-              'Modo Offline',
-              err?.message || 'Não é possível excluir informações do banco de dados enquanto estiver offline.'
-            );
-          }
-        },
-      },
-    ]);
   };
 
   const theme = {
@@ -463,26 +361,7 @@ export default function GarageScreen() {
                 </Text>
               </View>
             }
-            ListHeaderComponent={
-              vehicles.length > 1 ? (
-                <View
-                  style={[
-                    styles.orderTipBox,
-                    {
-                      backgroundColor: isDark ? 'rgba(245, 158, 11, 0.08)' : '#FFFBEB',
-                      borderColor: isDark ? 'rgba(245, 158, 11, 0.25)' : '#FDE68A',
-                    },
-                  ]}
-                >
-                  <Ionicons name="sparkles" size={14} color="#D97706" />
-                  <Text style={[styles.orderTipText, { color: isDark ? '#FCD34D' : '#92400E' }]}>
-                    {'O veículo no topo é o preferido do app. Use ▲ / ▼ ou "Tornar Topo" para reordenar.'}
-                  </Text>
-                </View>
-              ) : undefined
-            }
             renderItem={({ item, index }) => {
-              const isActive = item.id === activeId;
               const isPreferred = index === 0;
               const isMoto = item.vehicleType === 'moto';
               const fuelsDisplay = item.acceptedFuelTypes && item.acceptedFuelTypes.length > 0
@@ -498,11 +377,12 @@ export default function GarageScreen() {
                     styles.card,
                     {
                       backgroundColor: theme.card,
-                      borderColor: isActive ? theme.accent : theme.cardBorder,
-                      borderWidth: isActive ? 2 : 1,
+                      borderColor: theme.cardBorder,
+                      borderWidth: 1,
                     },
                   ]}
-                  onPress={() => handleSelectActive(item.id)}
+                  activeOpacity={0.7}
+                  onPress={() => router.push({ pathname: '/veiculo', params: { id: item.id } })}
                 >
                   <View style={styles.cardHeader}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
@@ -566,7 +446,10 @@ export default function GarageScreen() {
                               styles.makePreferredBtn,
                               { borderColor: isDark ? '#334155' : '#E2E8F0' },
                             ]}
-                            onPress={() => handleSetPreferred(item.id)}
+                            onPress={(e) => {
+                              e.stopPropagation?.();
+                              handleSetPreferred(item.id);
+                            }}
                             hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
                           >
                             <Ionicons name="star-outline" size={11} color={theme.textMuted} />
@@ -617,62 +500,13 @@ export default function GarageScreen() {
                     </View>
                   )}
 
-                  {/* TOTALIZADORES DO VEÍCULO (DISPONÍVEIS OFFLINE) */}
-                  <View style={[styles.statsGridRow, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#F8FAFC', borderColor: theme.cardBorder }]}>
-                    <View style={styles.statMiniCol}>
-                      <Text style={[styles.statMiniLabel, { color: theme.textMuted }]}>Consumo</Text>
-                      <Text style={[styles.statMiniValue, { color: theme.text }]} numberOfLines={1}>
-                        {item.mediaGeralKmPorLitro && item.mediaGeralKmPorLitro > 0
-                          ? `${item.mediaGeralKmPorLitro.toLocaleString('pt-BR')} km/L`
-                          : '--'}
-                      </Text>
-                    </View>
-
-                    <View style={[styles.statMiniDivider, { backgroundColor: theme.cardBorder }]} />
-
-                    <View style={styles.statMiniCol}>
-                      <Text style={[styles.statMiniLabel, { color: theme.textMuted }]}>Custo/km</Text>
-                      <Text style={[styles.statMiniValue, { color: theme.text }]} numberOfLines={1}>
-                        {item.custoMedioPorKm && item.custoMedioPorKm > 0
-                          ? `R$ ${item.custoMedioPorKm.toFixed(2)}`
-                          : '--'}
-                      </Text>
-                    </View>
-
-                    <View style={[styles.statMiniDivider, { backgroundColor: theme.cardBorder }]} />
-
-                    <View style={styles.statMiniCol}>
-                      <Text style={[styles.statMiniLabel, { color: theme.textMuted }]}>Combustível</Text>
-                      <Text style={[styles.statMiniValue, { color: theme.text }]} numberOfLines={1}>
-                        {item.totalGastoAbast != null && item.totalGastoAbast > 0
-                          ? `R$ ${item.totalGastoAbast.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
-                          : '--'}
-                      </Text>
-                    </View>
-
-                    <View style={[styles.statMiniDivider, { backgroundColor: theme.cardBorder }]} />
-
-                    <View style={styles.statMiniCol}>
-                      <Text style={[styles.statMiniLabel, { color: theme.textMuted }]}>Oficina</Text>
-                      <Text style={[styles.statMiniValue, { color: theme.text }]} numberOfLines={1}>
-                        {item.gastoManutencao != null && item.gastoManutencao > 0
-                          ? `R$ ${item.gastoManutencao.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
-                          : '--'}
-                      </Text>
-                    </View>
-                  </View>
-
                   <View style={[styles.cardFooter, { borderTopColor: theme.cardBorder }]}>
-                    {isActive ? (
-                      <View style={styles.activeTag}>
-                        <Ionicons name="checkmark-circle" size={16} color="#10B981" />
-                        <Text style={styles.activeTagText}>Veículo Ativo</Text>
-                      </View>
-                    ) : (
-                      <Text style={[styles.selectPrompt, { color: theme.textMuted }]}>
-                        Toque para ativar este veículo
+                    <View style={styles.viewDetailsTag}>
+                      <Text style={[styles.viewDetailsText, { color: theme.textMuted }]}>
+                        Ver detalhes
                       </Text>
-                    )}
+                      <Ionicons name="chevron-forward" size={14} color={theme.textMuted} />
+                    </View>
 
                     <View style={styles.cardActionsRow}>
                       {/* BOTOES DE ORDENAÇÃO */}
@@ -688,7 +522,10 @@ export default function GarageScreen() {
                               },
                             ]}
                             disabled={index === 0}
-                            onPress={() => handleMoveVehicle(item.id, 'up')}
+                            onPress={(e) => {
+                              e.stopPropagation?.();
+                              handleMoveVehicle(item.id, 'up');
+                            }}
                             hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
                           >
                             <Ionicons name="chevron-up" size={15} color={theme.text} />
@@ -704,31 +541,15 @@ export default function GarageScreen() {
                               },
                             ]}
                             disabled={index === vehicles.length - 1}
-                            onPress={() => handleMoveVehicle(item.id, 'down')}
+                            onPress={(e) => {
+                              e.stopPropagation?.();
+                              handleMoveVehicle(item.id, 'down');
+                            }}
                             hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
                           >
                             <Ionicons name="chevron-down" size={15} color={theme.text} />
                           </TouchableOpacity>
                         </View>
-                      )}
-
-                      {/* BOTÃO EDITAR */}
-                      <TouchableOpacity
-                        style={[styles.actionBtn, { borderColor: theme.cardBorder }]}
-                        onPress={() => handleOpenEdit(item)}
-                      >
-                        <Ionicons name="create-outline" size={15} color={theme.blue} />
-                        <Text style={[styles.actionBtnText, { color: theme.blue }]}>Editar</Text>
-                      </TouchableOpacity>
-
-                      {/* BOTÃO EXCLUIR */}
-                      {vehicles.length > 1 && (
-                        <TouchableOpacity
-                          style={[styles.actionBtn, { borderColor: theme.cardBorder }]}
-                          onPress={() => handleDelete(item.id)}
-                        >
-                          <Ionicons name="trash-outline" size={15} color={theme.red} />
-                        </TouchableOpacity>
                       )}
                     </View>
                   </View>
@@ -738,7 +559,7 @@ export default function GarageScreen() {
           />
         )}
 
-        {/* MODAL ADICIONAR / EDITAR VEÍCULO */}
+        {/* MODAL ADICIONAR VEÍCULO */}
         <Modal
           visible={modalVisible}
           transparent
@@ -774,7 +595,7 @@ export default function GarageScreen() {
             >
               <View style={styles.modalHeader}>
                 <Text style={[styles.modalTitle, { color: theme.text }]}>
-                  {editingVehicle ? 'Editar Veículo' : 'Adicionar Veículo'}
+                  Adicionar Veículo
                 </Text>
                 <TouchableOpacity
                   onPress={() => !saving && setModalVisible(false)}
@@ -844,18 +665,16 @@ export default function GarageScreen() {
                 {/* SELETOR CARRO / MOTO */}
                 <View style={styles.typeSelectorRow}>
                   <TouchableOpacity
-                    disabled={Boolean(editingVehicle)}
                     style={[
                       styles.typeSelectorBtn,
                       {
                         backgroundColor: vehicleType === 'carro' ? theme.accent : theme.bg,
                         borderColor: theme.cardBorder,
-                        opacity: editingVehicle && vehicleType !== 'carro' ? 0.4 : 1,
                       },
                     ]}
                     onPress={() => {
                       setVehicleType('carro');
-                      if (!editingVehicle) setTankCapacity('50');
+                      setTankCapacity('50');
                     }}
                   >
                     <Ionicons
@@ -874,18 +693,16 @@ export default function GarageScreen() {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    disabled={Boolean(editingVehicle)}
                     style={[
                       styles.typeSelectorBtn,
                       {
                         backgroundColor: vehicleType === 'moto' ? theme.accent : theme.bg,
                         borderColor: theme.cardBorder,
-                        opacity: editingVehicle && vehicleType !== 'moto' ? 0.4 : 1,
                       },
                     ]}
                     onPress={() => {
                       setVehicleType('moto');
-                      if (!editingVehicle) setTankCapacity('14');
+                      setTankCapacity('14');
                     }}
                   >
                     <Ionicons
@@ -904,21 +721,16 @@ export default function GarageScreen() {
                   </TouchableOpacity>
                 </View>
 
-                {/* MARCA E MODELO (BLOQUEADOS NA EDIÇÃO) */}
+                {/* MARCA E MODELO */}
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Marca:</Text>
-                      {editingVehicle && (
-                        <Ionicons name="lock-closed" size={12} color={theme.textMuted} />
-                      )}
-                    </View>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Marca:</Text>
                     <TextInput
                       style={[
                         styles.input,
                         {
-                          backgroundColor: editingVehicle ? (isDark ? '#0A0F1D' : '#F1F5F9') : theme.bg,
-                          color: editingVehicle ? theme.textMuted : theme.text,
+                          backgroundColor: theme.bg,
+                          color: theme.text,
                           borderColor: theme.cardBorder,
                         },
                       ]}
@@ -927,23 +739,17 @@ export default function GarageScreen() {
                       onFocus={() => scrollToInput(120)}
                       placeholder="Ex: Volkswagen"
                       placeholderTextColor={theme.textMuted}
-                      editable={!editingVehicle}
                     />
                   </View>
 
                   <View style={[styles.inputGroup, { flex: 1.2 }]}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Modelo / Apelido:</Text>
-                      {editingVehicle && (
-                        <Ionicons name="lock-closed" size={12} color={theme.textMuted} />
-                      )}
-                    </View>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Modelo / Apelido:</Text>
                     <TextInput
                       style={[
                         styles.input,
                         {
-                          backgroundColor: editingVehicle ? (isDark ? '#0A0F1D' : '#F1F5F9') : theme.bg,
-                          color: editingVehicle ? theme.textMuted : theme.text,
+                          backgroundColor: theme.bg,
+                          color: theme.text,
                           borderColor: theme.cardBorder,
                         },
                       ]}
@@ -952,26 +758,20 @@ export default function GarageScreen() {
                       onFocus={() => scrollToInput(120)}
                       placeholder="Ex: Gol 1.0"
                       placeholderTextColor={theme.textMuted}
-                      editable={!editingVehicle}
                     />
                   </View>
                 </View>
 
-                {/* PLACA (BLOQUEADA NA EDIÇÃO) E ANO */}
+                {/* PLACA E ANO */}
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Placa:</Text>
-                      {editingVehicle && (
-                        <Ionicons name="lock-closed" size={12} color={theme.textMuted} />
-                      )}
-                    </View>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Placa:</Text>
                     <TextInput
                       style={[
                         styles.input,
                         {
-                          backgroundColor: editingVehicle ? (isDark ? '#0A0F1D' : '#F1F5F9') : theme.bg,
-                          color: editingVehicle ? theme.textMuted : theme.text,
+                          backgroundColor: theme.bg,
+                          color: theme.text,
                           borderColor: theme.cardBorder,
                         },
                       ]}
@@ -981,7 +781,6 @@ export default function GarageScreen() {
                       placeholder="Ex: ABC-1234"
                       autoCapitalize="characters"
                       maxLength={8}
-                      editable={!editingVehicle}
                       placeholderTextColor={theme.textMuted}
                     />
                   </View>
@@ -999,15 +798,6 @@ export default function GarageScreen() {
                     />
                   </View>
                 </View>
-
-                {editingVehicle && (
-                  <View style={[styles.lockedNoticeRow, { backgroundColor: isDark ? '#0F172A' : '#F1F5F9' }]}>
-                    <Ionicons name="lock-closed-outline" size={14} color={theme.textMuted} />
-                    <Text style={[styles.lockedNoticeText, { color: theme.textMuted }]}>
-                      Marca, modelo e placa não podem ser alterados na edição.
-                    </Text>
-                  </View>
-                )}
 
                 {/* ODÔMETRO E CAPACIDADE DO TANQUE */}
                 <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -1113,8 +903,6 @@ export default function GarageScreen() {
                   </View>
                 </View>
 
-
-
                 <TouchableOpacity
                   style={[
                     styles.saveBtn,
@@ -1134,14 +922,10 @@ export default function GarageScreen() {
                   {saving ? (
                     <>
                       <ActivityIndicator size="small" color="#FFFFFF" />
-                      <Text style={styles.saveBtnText}>
-                        {editingVehicle ? 'Salvando Alterações...' : 'Cadastrando Veículo...'}
-                      </Text>
+                      <Text style={styles.saveBtnText}>Cadastrando Veículo...</Text>
                     </>
                   ) : (
-                    <Text style={styles.saveBtnText}>
-                      {editingVehicle ? 'Salvar Alterações' : 'Cadastrar Veículo'}
-                    </Text>
+                    <Text style={styles.saveBtnText}>Cadastrar Veículo</Text>
                   )}
                 </TouchableOpacity>
               </ScrollView>
@@ -1298,15 +1082,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
-  gastoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: -4,
-  },
-  gastoText: {
-    fontSize: 11,
-  },
   cardFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1314,37 +1089,19 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     borderTopWidth: 1,
   },
-  activeTag: {
+  viewDetailsTag: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 3,
   },
-  activeTagText: {
-    color: '#10B981',
-    fontWeight: '700',
+  viewDetailsText: {
     fontSize: 12,
-  },
-  selectPrompt: {
-    fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   cardActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  actionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 5,
-    paddingHorizontal: 9,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  actionBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
   },
   modalOverlay: {
     flex: 1,
@@ -1435,20 +1192,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  lockedNoticeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    marginTop: -4,
-    marginBottom: 2,
-  },
-  lockedNoticeText: {
-    fontSize: 11,
-    fontStyle: 'italic',
-  },
   saveBtn: {
     paddingVertical: 14,
     borderRadius: 14,
@@ -1499,10 +1242,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
   },
-  logoutText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
   userCardActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1530,18 +1269,6 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 12,
-  },
-  userAvatarEditBadge: {
-    position: 'absolute',
-    bottom: -3,
-    right: -3,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: '#FFFFFF',
   },
   vehiclePhotoPickerContainer: {
     alignItems: 'center',
@@ -1586,50 +1313,6 @@ const styles = StyleSheet.create({
     color: '#EF4444',
     fontSize: 12,
     fontWeight: '600',
-  },
-  statsGridRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  statMiniCol: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statMiniLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    marginBottom: 2,
-    textTransform: 'uppercase',
-  },
-  statMiniValue: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  statMiniDivider: {
-    width: 1,
-    height: 18,
-  },
-  orderTipBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    marginBottom: 12,
-  },
-  orderTipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    flex: 1,
   },
   preferredBadge: {
     flexDirection: 'row',
