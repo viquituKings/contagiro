@@ -1,28 +1,31 @@
-import React, { useState, useCallback, useRef, useMemo } from 'react';
+import { StorageService } from '@/services/storage';
+import { FuelType, Refueling, Vehicle } from '@/types/vehicle';
+import { compareDatesDesc, formatDateToBR } from '@/utils/date';
+import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  StyleSheet,
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  Modal,
-  TextInput,
-  Alert,
-  useColorScheme,
-  Switch,
   ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
   RefreshControl,
   ScrollView,
-  Platform,
-  Image,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useColorScheme,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { StorageService } from '@/services/storage';
-import { Vehicle, Refueling, FuelType } from '@/types/vehicle';
-import { formatDateToBR, compareDatesDesc } from '@/utils/date';
 
 export default function RefuelingsScreen() {
   const colorScheme = useColorScheme();
@@ -51,6 +54,35 @@ export default function RefuelingsScreen() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
 
+  // Controle de teclado e foco para manter campos visíveis
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const modalScrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        setKeyboardVisible(true);
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardVisible(false);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const scrollToInput = (yOffset: number) => {
+    setTimeout(() => {
+      modalScrollRef.current?.scrollTo({ y: yOffset, animated: true });
+    }, 100);
+  };
+
   const getLocalDateString = (d: Date): string => {
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -70,28 +102,6 @@ export default function RefuelingsScreen() {
     if (isPull) setRefreshing(true);
     else setLoading(true);
     try {
-      // 1. Carregamento instantâneo do cache local (5 últimos abastecimentos + totalizadores)
-      const [cachedVehicles, activeId] = await Promise.all([
-        StorageService.getCachedVehicles(),
-        StorageService.getActiveVehicleId(),
-      ]);
-      if (cachedVehicles.length > 0) {
-        setVehicles(cachedVehicles);
-        const cachedCur =
-          cachedVehicles.find((v) => v.id === activeId) || cachedVehicles[0] || null;
-        setVehicle(cachedCur);
-        if (cachedCur) {
-          const cachedList = await StorageService.getCachedRefuelings(cachedCur.id);
-          setRefuelings(cachedList);
-          setOdometer(String(cachedCur.currentOdometer));
-          if (cachedCur.acceptedFuelTypes && cachedCur.acceptedFuelTypes.length > 0) {
-            setFuelType(cachedCur.acceptedFuelTypes[0]);
-          }
-          setLoading(false);
-        }
-      }
-
-      // 2. Sincronização / atualização com preservação offline
       const allVehicles = await StorageService.getVehicles();
       setVehicles(allVehicles);
 
@@ -100,15 +110,10 @@ export default function RefuelingsScreen() {
 
       if (curVehicle) {
         const list = await StorageService.getRefuelings(curVehicle.id);
-        const updatedVehicles = await StorageService.getCachedVehicles();
-        const updatedCur =
-          updatedVehicles.find((v) => v.id === curVehicle.id) || curVehicle;
-        setVehicles(updatedVehicles);
-        setVehicle(updatedCur);
         setRefuelings(list);
-        setOdometer(String(updatedCur.currentOdometer));
-        if (updatedCur.acceptedFuelTypes && updatedCur.acceptedFuelTypes.length > 0) {
-          setFuelType(updatedCur.acceptedFuelTypes[0]);
+        setOdometer(String(curVehicle.currentOdometer));
+        if (curVehicle.acceptedFuelTypes && curVehicle.acceptedFuelTypes.length > 0) {
+          setFuelType(curVehicle.acceptedFuelTypes[0]);
         }
       } else {
         setRefuelings([]);
@@ -138,19 +143,12 @@ export default function RefuelingsScreen() {
     if (veh.acceptedFuelTypes && veh.acceptedFuelTypes.length > 0) {
       setFuelType(veh.acceptedFuelTypes[0]);
     }
+    setRefuelings([]);
 
     try {
       await StorageService.setActiveVehicleId(veh.id);
-      const cachedList = await StorageService.getCachedRefuelings(veh.id);
-      if (requestId === latestSwitchRequestId.current) {
-        setRefuelings(cachedList);
-      }
       const list = await StorageService.getRefuelings(veh.id);
       if (requestId === latestSwitchRequestId.current) {
-        const updatedVehicles = await StorageService.getCachedVehicles();
-        const updatedVeh = updatedVehicles.find((v) => v.id === veh.id) || veh;
-        setVehicles(updatedVehicles);
-        setVehicle(updatedVeh);
         setRefuelings(list);
       }
     } catch (err) {
@@ -332,31 +330,15 @@ export default function RefuelingsScreen() {
     await saveRefuelingItem(odomNum, priceNum, totalNum, litersNum);
   };
 
-  const handleDelete = async (id: string) => {
-    const online = await StorageService.checkOnlineStatus(true);
-    if (!online) {
-      Alert.alert(
-        'Modo Offline',
-        'Não é possível excluir abastecimentos do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
-      );
-      return;
-    }
-
+  const handleDelete = (id: string) => {
     Alert.alert('Excluir Abastecimento', 'Deseja realmente remover este registro do histórico e do banco de dados?', [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
-          try {
-            await StorageService.deleteRefueling(id, vehicle?.id);
-            await loadData();
-          } catch (err: any) {
-            Alert.alert(
-              'Modo Offline',
-              err?.message || 'Não é possível excluir informações do banco de dados enquanto estiver offline.'
-            );
-          }
+          await StorageService.deleteRefueling(id, vehicle?.id);
+          await loadData();
         },
       },
     ]);
@@ -387,34 +369,16 @@ export default function RefuelingsScreen() {
     }
   };
 
-  // Métricas e totalizadores agregados do veículo selecionado (utiliza os totalizadores em cache quando offline)
-  const listTotalSpent = refuelings.reduce((sum, r) => sum + r.totalAmount, 0);
-  const listTotalLiters = refuelings.reduce((sum, r) => sum + r.liters, 0);
-  const totalSpent =
-    vehicle?.totalGastoAbast != null &&
-    (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length &&
-    vehicle.totalGastoAbast >= listTotalSpent
-      ? vehicle.totalGastoAbast
-      : listTotalSpent;
-  const totalLiters =
-    vehicle?.totalLitrosAbast != null &&
-    (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length &&
-    vehicle.totalLitrosAbast >= listTotalLiters
-      ? vehicle.totalLitrosAbast
-      : listTotalLiters;
+  // Métricas agregadas do veículo selecionado
+  const totalSpent = refuelings.reduce((sum, r) => sum + r.totalAmount, 0);
+  const totalLiters = refuelings.reduce((sum, r) => sum + r.liters, 0);
   const validConsumptions = refuelings
     .map((r) => r.consumptionKmPerLiter)
     .filter((c): c is number => typeof c === 'number' && c > 0 && c < 50);
-  const listAvgConsumption =
+  const avgConsumption =
     validConsumptions.length > 0
       ? (validConsumptions.reduce((a, b) => a + b, 0) / validConsumptions.length).toFixed(2)
       : null;
-  const avgConsumption =
-    vehicle?.mediaGeralKmPorLitro &&
-    vehicle.mediaGeralKmPorLitro > 0 &&
-    (vehicle.qtdAbastecimentos ?? 0) >= refuelings.length
-      ? vehicle.mediaGeralKmPorLitro.toFixed(2)
-      : listAvgConsumption;
 
   // Combustíveis aceitos pelo veículo (limita no cadastro)
   const availableFuels: FuelType[] =
@@ -537,8 +501,8 @@ export default function RefuelingsScreen() {
                                       ? 'rgba(16, 185, 129, 0.25)'
                                       : 'rgba(16, 185, 129, 0.15)'
                                     : isDark
-                                    ? '#1E293B'
-                                    : '#E2E8F0',
+                                      ? '#1E293B'
+                                      : '#E2E8F0',
                                 },
                               ]}
                             >
@@ -822,9 +786,39 @@ export default function RefuelingsScreen() {
         )}
 
         {/* MODAL NOVO ABASTECIMENTO */}
-        <Modal visible={modalVisible} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={[styles.modalContent, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+        <Modal
+          visible={modalVisible}
+          transparent
+          animationType="slide"
+          statusBarTranslucent={true}
+          onRequestClose={() => {
+            if (!saving) setModalVisible(false);
+          }}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalOverlay}
+          >
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => {
+                if (keyboardVisible) {
+                  Keyboard.dismiss();
+                } else if (!saving) {
+                  setModalVisible(false);
+                }
+              }}
+            />
+            <View
+              style={[
+                styles.modalContent,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.cardBorder,
+                  maxHeight: keyboardVisible ? '92%' : '88%',
+                },
+              ]}
+            >
               <View style={styles.modalHeader}>
                 <View>
                   <Text style={[styles.modalTitle, { color: theme.text }]}>Novo Abastecimento</Text>
@@ -841,7 +835,16 @@ export default function RefuelingsScreen() {
                 </TouchableOpacity>
               </View>
 
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+              <ScrollView
+                ref={modalScrollRef}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                automaticallyAdjustKeyboardInsets={true}
+                contentContainerStyle={{
+                  gap: 12,
+                  paddingBottom: keyboardVisible ? 140 : 30,
+                }}
+              >
                 {/* SELETOR DE COMBUSTÍVEL (LIMITADO AOS ACEITOS PELO VEÍCULO) */}
                 <View style={styles.inputGroup}>
                   <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
@@ -901,6 +904,7 @@ export default function RefuelingsScreen() {
                       keyboardType="numeric"
                       value={odometer}
                       onChangeText={setOdometer}
+                      onFocus={() => scrollToInput(60)}
                       placeholder="Ex: 38450"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -927,6 +931,7 @@ export default function RefuelingsScreen() {
                       keyboardType="numeric"
                       value={pricePerLiter}
                       onChangeText={handlePriceChange}
+                      onFocus={() => scrollToInput(140)}
                       placeholder="Ex: 5,89"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -939,6 +944,7 @@ export default function RefuelingsScreen() {
                       keyboardType="numeric"
                       value={totalAmount}
                       onChangeText={handleTotalChange}
+                      onFocus={() => scrollToInput(140)}
                       placeholder="Ex: 235,60"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -954,6 +960,7 @@ export default function RefuelingsScreen() {
                       keyboardType="numeric"
                       value={liters}
                       onChangeText={handleLitersChange}
+                      onFocus={() => scrollToInput(220)}
                       placeholder="Ex: 40,00"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -965,6 +972,7 @@ export default function RefuelingsScreen() {
                       style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
                       value={notes}
                       onChangeText={setNotes}
+                      onFocus={() => scrollToInput(240)}
                       placeholder="Ex: Posto Ipiranga, cidade..."
                       placeholderTextColor={theme.textMuted}
                     />
@@ -1027,7 +1035,7 @@ export default function RefuelingsScreen() {
                 </TouchableOpacity>
               </ScrollView>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       </View>
     </SafeAreaView>
@@ -1399,6 +1407,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 20,
     maxHeight: '88%',
+    flexShrink: 1,
     gap: 12,
   },
   modalHeader: {

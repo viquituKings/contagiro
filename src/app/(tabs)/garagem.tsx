@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -12,6 +12,10 @@ import {
   RefreshControl,
   ScrollView,
   Image,
+  KeyboardAvoidingView,
+  Keyboard,
+  Platform,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -65,6 +69,35 @@ export default function GarageScreen() {
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoLoading, setPhotoLoading] = useState(false);
   const previewDisplacement = parseEngineDisplacement(engineDisplacement);
+
+  // Controle de teclado e foco para manter campos visíveis
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const modalScrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        setKeyboardVisible(true);
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardVisible(false);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const scrollToInput = (yOffset: number) => {
+    setTimeout(() => {
+      modalScrollRef.current?.scrollTo({ y: yOffset, animated: true });
+    }, 100);
+  };
 
   const loadData = async (isPull = false) => {
     if (isPull) setRefreshing(true);
@@ -706,9 +739,39 @@ export default function GarageScreen() {
         )}
 
         {/* MODAL ADICIONAR / EDITAR VEÍCULO */}
-        <Modal visible={modalVisible} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={[styles.modalContent, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+        <Modal
+          visible={modalVisible}
+          transparent
+          animationType="slide"
+          statusBarTranslucent={true}
+          onRequestClose={() => {
+            if (!saving) setModalVisible(false);
+          }}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalOverlay}
+          >
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => {
+                if (keyboardVisible) {
+                  Keyboard.dismiss();
+                } else if (!saving) {
+                  setModalVisible(false);
+                }
+              }}
+            />
+            <View
+              style={[
+                styles.modalContent,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.cardBorder,
+                  maxHeight: keyboardVisible ? '92%' : '88%',
+                },
+              ]}
+            >
               <View style={styles.modalHeader}>
                 <Text style={[styles.modalTitle, { color: theme.text }]}>
                   {editingVehicle ? 'Editar Veículo' : 'Adicionar Veículo'}
@@ -722,7 +785,16 @@ export default function GarageScreen() {
                 </TouchableOpacity>
               </View>
 
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+              <ScrollView
+                ref={modalScrollRef}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                automaticallyAdjustKeyboardInsets={true}
+                contentContainerStyle={{
+                  gap: 12,
+                  paddingBottom: keyboardVisible ? 140 : 30,
+                }}
+              >
                 {/* FOTO / AVATAR DO VEÍCULO */}
                 <View style={styles.vehiclePhotoPickerContainer}>
                   <TouchableOpacity
@@ -852,6 +924,7 @@ export default function GarageScreen() {
                       ]}
                       value={brand}
                       onChangeText={setBrand}
+                      onFocus={() => scrollToInput(120)}
                       placeholder="Ex: Volkswagen"
                       placeholderTextColor={theme.textMuted}
                       editable={!editingVehicle}
@@ -876,6 +949,7 @@ export default function GarageScreen() {
                       ]}
                       value={name}
                       onChangeText={setName}
+                      onFocus={() => scrollToInput(120)}
                       placeholder="Ex: Gol 1.0"
                       placeholderTextColor={theme.textMuted}
                       editable={!editingVehicle}
@@ -903,6 +977,7 @@ export default function GarageScreen() {
                       ]}
                       value={plate}
                       onChangeText={(val) => setPlate(formatPlate(val))}
+                      onFocus={() => scrollToInput(180)}
                       placeholder="Ex: ABC-1234"
                       autoCapitalize="characters"
                       maxLength={8}
@@ -918,6 +993,7 @@ export default function GarageScreen() {
                       keyboardType="numeric"
                       value={year}
                       onChangeText={setYear}
+                      onFocus={() => scrollToInput(180)}
                       placeholder="Ex: 2022"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -942,6 +1018,7 @@ export default function GarageScreen() {
                       keyboardType="numeric"
                       value={currentOdometer}
                       onChangeText={setCurrentOdometer}
+                      onFocus={() => scrollToInput(250)}
                       placeholder="Ex: 85000"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -954,6 +1031,7 @@ export default function GarageScreen() {
                       keyboardType="numeric"
                       value={tankCapacity}
                       onChangeText={setTankCapacity}
+                      onFocus={() => scrollToInput(250)}
                       placeholder={vehicleType === 'moto' ? '14' : '50'}
                       placeholderTextColor={theme.textMuted}
                     />
@@ -979,6 +1057,7 @@ export default function GarageScreen() {
                     keyboardType="decimal-pad"
                     value={engineDisplacement}
                     onChangeText={setEngineDisplacement}
+                    onFocus={() => scrollToInput(320)}
                     placeholder={
                       vehicleType === 'moto'
                         ? 'Ex: 160, 250 ou 1000'
@@ -1067,7 +1146,7 @@ export default function GarageScreen() {
                 </TouchableOpacity>
               </ScrollView>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       </View>
     </SafeAreaView>
@@ -1278,6 +1357,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 20,
     maxHeight: '88%',
+    flexShrink: 1,
     gap: 14,
   },
   modalHeader: {

@@ -1,29 +1,32 @@
-import React, { useState, useCallback, useRef } from 'react';
-import {
-  StyleSheet,
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  Modal,
-  TextInput,
-  Alert,
-  useColorScheme,
-  ScrollView,
-  Platform,
-  RefreshControl,
-  ActivityIndicator,
-  Image,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { StorageService } from '@/services/storage';
 import { Calculations } from '@/services/calculations';
 import { NotificationService } from '@/services/notifications';
-import { Vehicle, MaintenanceItem, MaintenanceCategory } from '@/types/vehicle';
+import { StorageService } from '@/services/storage';
+import { MaintenanceCategory, MaintenanceItem, Vehicle } from '@/types/vehicle';
 import { formatDateToBR } from '@/utils/date';
+import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useColorScheme,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function MaintenancesScreen() {
   const colorScheme = useColorScheme();
@@ -70,6 +73,42 @@ export default function MaintenancesScreen() {
   const [periodicUltimaEsticarCorrenteKm, setPeriodicUltimaEsticarCorrenteKm] = useState('');
   const [periodicEsticarCorrenteKm, setPeriodicEsticarCorrenteKm] = useState('1500');
 
+  // Controle de teclado e foco para evidenciar campos de inserção
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const modalMntScrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const modalPeriodicScrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        setKeyboardVisible(true);
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardVisible(false);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const scrollToMntInput = (yOffset: number) => {
+    setTimeout(() => {
+      modalMntScrollRef.current?.scrollTo({ y: yOffset, animated: true });
+    }, 100);
+  };
+
+  const scrollToPeriodicInput = (yOffset: number) => {
+    setTimeout(() => {
+      modalPeriodicScrollRef.current?.scrollTo({ y: yOffset, animated: true });
+    }, 100);
+  };
+
   const getLocalDateString = (d: Date): string => {
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -97,25 +136,6 @@ export default function MaintenancesScreen() {
     else setLoading(true);
 
     try {
-      // 1. Carregamento instantâneo do cache local (5 últimas manutenções + totalizadores)
-      const [cachedVehicles, activeId] = await Promise.all([
-        StorageService.getCachedVehicles(),
-        StorageService.getActiveVehicleId(),
-      ]);
-      if (cachedVehicles.length > 0) {
-        setVehicles(cachedVehicles);
-        const cachedCur =
-          cachedVehicles.find((v) => v.id === activeId) || cachedVehicles[0] || null;
-        setVehicle(cachedCur);
-        if (cachedCur) {
-          const cachedList = await StorageService.getCachedMaintenances(cachedCur.id);
-          setMaintenances(cachedList);
-          setOdometer(String(cachedCur.currentOdometer));
-          setLoading(false);
-        }
-      }
-
-      // 2. Sincronização / atualização com preservação offline
       const allVehicles = await StorageService.getVehicles();
       setVehicles(allVehicles);
 
@@ -124,13 +144,8 @@ export default function MaintenancesScreen() {
 
       if (activeVeh) {
         const list = await StorageService.getMaintenances(activeVeh.id);
-        const updatedVehicles = await StorageService.getCachedVehicles();
-        const updatedVeh =
-          updatedVehicles.find((v) => v.id === activeVeh.id) || activeVeh;
-        setVehicles(updatedVehicles);
-        setVehicle(updatedVeh);
         setMaintenances(list);
-        setOdometer(String(updatedVeh.currentOdometer));
+        setOdometer(String(activeVeh.currentOdometer));
       } else {
         setMaintenances([]);
       }
@@ -156,19 +171,12 @@ export default function MaintenancesScreen() {
     setIsSwitchingVehicle(true);
     setVehicle(v);
     setOdometer(String(v.currentOdometer));
+    setMaintenances([]);
 
     try {
       await StorageService.setActiveVehicleId(v.id);
-      const cachedList = await StorageService.getCachedMaintenances(v.id);
-      if (requestId === latestSwitchRequestId.current) {
-        setMaintenances(cachedList);
-      }
       const list = await StorageService.getMaintenances(v.id);
       if (requestId === latestSwitchRequestId.current) {
-        const updatedVehicles = await StorageService.getCachedVehicles();
-        const updatedVeh = updatedVehicles.find((item) => item.id === v.id) || v;
-        setVehicles(updatedVehicles);
-        setVehicle(updatedVeh);
         setMaintenances(list);
       }
     } catch (e) {
@@ -185,29 +193,29 @@ export default function MaintenancesScreen() {
   // Categorias disponíveis filtradas conforme o perfil do veículo
   const availableCategories: { id: MaintenanceCategory; label: string; defaultTitle: string; defaultInterval: string }[] = isMoto
     ? [
-        { id: 'oleo_filtro', label: 'Óleo e Filtros', defaultTitle: 'Troca de Óleo e Filtros', defaultInterval: '3000' },
-        { id: 'revisao_geral', label: 'Revisão Geral', defaultTitle: 'Revisão Geral Periódica', defaultInterval: '6000' },
-        { id: 'freios', label: 'Pastilhas/Lonas de Freio', defaultTitle: 'Troca de Pastilhas/Lonas de Freio', defaultInterval: '' },
-        { id: 'troca_pneus', label: 'Troca de Pneus', defaultTitle: 'Substituição de Pneu', defaultInterval: '' },
-        { id: 'lubrificar_corrente', label: 'Lubrificar Corrente', defaultTitle: 'Lubrificação da Corrente/Relação', defaultInterval: '500' },
-        { id: 'esticar_corrente', label: 'Esticar Corrente', defaultTitle: 'Ajuste e Tensão da Corrente', defaultInterval: '1500' },
-        { id: 'suspensao', label: 'Suspensão', defaultTitle: 'Manutenção da Suspensão', defaultInterval: '20000' },
-        { id: 'bateria', label: 'Bateria e Elétrica', defaultTitle: 'Substituição da Bateria', defaultInterval: '30000' },
-        { id: 'outros', label: 'Outras Manutenções', defaultTitle: 'Serviço Diverso', defaultInterval: '' },
-      ]
+      { id: 'oleo_filtro', label: 'Óleo e Filtros', defaultTitle: 'Troca de Óleo e Filtros', defaultInterval: '3000' },
+      { id: 'revisao_geral', label: 'Revisão Geral', defaultTitle: 'Revisão Geral Periódica', defaultInterval: '6000' },
+      { id: 'freios', label: 'Pastilhas/Lonas de Freio', defaultTitle: 'Troca de Pastilhas/Lonas de Freio', defaultInterval: '' },
+      { id: 'troca_pneus', label: 'Troca de Pneus', defaultTitle: 'Substituição de Pneu', defaultInterval: '' },
+      { id: 'lubrificar_corrente', label: 'Lubrificar Corrente', defaultTitle: 'Lubrificação da Corrente/Relação', defaultInterval: '500' },
+      { id: 'esticar_corrente', label: 'Esticar Corrente', defaultTitle: 'Ajuste e Tensão da Corrente', defaultInterval: '1500' },
+      { id: 'suspensao', label: 'Suspensão', defaultTitle: 'Manutenção da Suspensão', defaultInterval: '20000' },
+      { id: 'bateria', label: 'Bateria e Elétrica', defaultTitle: 'Substituição da Bateria', defaultInterval: '30000' },
+      { id: 'outros', label: 'Outras Manutenções', defaultTitle: 'Serviço Diverso', defaultInterval: '' },
+    ]
     : [
-        { id: 'oleo_filtro', label: 'Óleo e Filtros', defaultTitle: 'Troca de Óleo e Filtros', defaultInterval: '10000' },
-        { id: 'revisao_geral', label: 'Revisão Geral', defaultTitle: 'Revisão Geral Periódica', defaultInterval: '10000' },
-        { id: 'freios', label: 'Pastilhas/Lonas de Freio', defaultTitle: 'Troca de Pastilhas/Lonas de Freio', defaultInterval: '' },
-        { id: 'troca_pneus', label: 'Troca de Pneus', defaultTitle: 'Substituição de Pneu(s)', defaultInterval: '' },
-        { id: 'alinhamento_balanceamento', label: 'Alinhamento & Balanceamento', defaultTitle: 'Alinhamento 3D + Balanceamento', defaultInterval: '10000' },
-        { id: 'rodizio_pneus', label: 'Rodízio de Pneus', defaultTitle: 'Rodízio e Calibragem dos Pneus', defaultInterval: '10000' },
-        { id: 'suspensao', label: 'Suspensão', defaultTitle: 'Amortecedores / Buchas / Pivôs', defaultInterval: '30000' },
-        { id: 'ar_condicionado', label: 'Ar Condicionado', defaultTitle: 'Higienização e Filtro de Cabine', defaultInterval: '15000' },
-        { id: 'bateria', label: 'Bateria e Elétrica', defaultTitle: 'Substituição da Bateria', defaultInterval: '35000' },
-        { id: 'documentacao', label: 'IPVA e Seguro', defaultTitle: 'Licenciamento e IPVA Anual', defaultInterval: '' },
-        { id: 'outros', label: 'Outras Manutenções', defaultTitle: 'Serviço Diverso', defaultInterval: '' },
-      ];
+      { id: 'oleo_filtro', label: 'Óleo e Filtros', defaultTitle: 'Troca de Óleo e Filtros', defaultInterval: '10000' },
+      { id: 'revisao_geral', label: 'Revisão Geral', defaultTitle: 'Revisão Geral Periódica', defaultInterval: '10000' },
+      { id: 'freios', label: 'Pastilhas/Lonas de Freio', defaultTitle: 'Troca de Pastilhas/Lonas de Freio', defaultInterval: '' },
+      { id: 'troca_pneus', label: 'Troca de Pneus', defaultTitle: 'Substituição de Pneu(s)', defaultInterval: '' },
+      { id: 'alinhamento_balanceamento', label: 'Alinhamento & Balanceamento', defaultTitle: 'Alinhamento 3D + Balanceamento', defaultInterval: '10000' },
+      { id: 'rodizio_pneus', label: 'Rodízio de Pneus', defaultTitle: 'Rodízio e Calibragem dos Pneus', defaultInterval: '10000' },
+      { id: 'suspensao', label: 'Suspensão', defaultTitle: 'Amortecedores / Buchas / Pivôs', defaultInterval: '30000' },
+      { id: 'ar_condicionado', label: 'Ar Condicionado', defaultTitle: 'Higienização e Filtro de Cabine', defaultInterval: '15000' },
+      { id: 'bateria', label: 'Bateria e Elétrica', defaultTitle: 'Substituição da Bateria', defaultInterval: '35000' },
+      { id: 'documentacao', label: 'IPVA e Seguro', defaultTitle: 'Licenciamento e IPVA Anual', defaultInterval: '' },
+      { id: 'outros', label: 'Outras Manutenções', defaultTitle: 'Serviço Diverso', defaultInterval: '' },
+    ];
 
   // Opções de Lado para Pastilhas/Lonas de Freio
   const brakeSides = [
@@ -219,19 +227,19 @@ export default function MaintenancesScreen() {
   // Opções de Lado para Troca de Pneus
   const tireSides = isMoto
     ? [
-        { id: 'DIANTEIRA', label: 'Dianteiro' },
-        { id: 'TRASEIRA', label: 'Traseiro' },
-        { id: 'AMBOS', label: 'Ambos' },
-      ]
+      { id: 'DIANTEIRA', label: 'Dianteiro' },
+      { id: 'TRASEIRA', label: 'Traseiro' },
+      { id: 'AMBOS', label: 'Ambos' },
+    ]
     : [
-        { id: 'DIANTEIRO_ESQUERDO', label: 'Diant. Esquerdo' },
-        { id: 'DIANTEIRO_DIREITO', label: 'Diant. Direito' },
-        { id: 'TRASEIRO_ESQUERDO', label: 'Tras. Esquerdo' },
-        { id: 'TRASEIRO_DIREITO', label: 'Tras. Direito' },
-        { id: 'DIANTEIROS', label: 'Ambos Dianteiros' },
-        { id: 'TRASEIROS', label: 'Ambos Traseiros' },
-        { id: 'TODOS_4', label: 'Todos os 4 Pneus' },
-      ];
+      { id: 'DIANTEIRO_ESQUERDO', label: 'Diant. Esquerdo' },
+      { id: 'DIANTEIRO_DIREITO', label: 'Diant. Direito' },
+      { id: 'TRASEIRO_ESQUERDO', label: 'Tras. Esquerdo' },
+      { id: 'TRASEIRO_DIREITO', label: 'Tras. Direito' },
+      { id: 'DIANTEIROS', label: 'Ambos Dianteiros' },
+      { id: 'TRASEIROS', label: 'Ambos Traseiros' },
+      { id: 'TODOS_4', label: 'Todos os 4 Pneus' },
+    ];
 
   const handleSelectCategory = (catId: MaintenanceCategory) => {
     setCategory(catId);
@@ -412,7 +420,7 @@ export default function MaintenancesScreen() {
       await StorageService.addMaintenance(newMnt);
       setModalMntVisible(false);
       await loadData();
-      NotificationService.syncMaintenanceNotifications().catch(() => {});
+      NotificationService.syncMaintenanceNotifications().catch(() => { });
     } catch (err) {
       console.error('Erro ao salvar manutenção:', err);
       Alert.alert('Erro', 'Ocorreu um erro ao salvar a manutenção. Tente novamente.');
@@ -421,32 +429,16 @@ export default function MaintenancesScreen() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    const online = await StorageService.checkOnlineStatus(true);
-    if (!online) {
-      Alert.alert(
-        'Modo Offline',
-        'Não é possível excluir registros de manutenção do banco de dados enquanto estiver offline. Conecte-se à internet e tente novamente.'
-      );
-      return;
-    }
-
+  const handleDelete = (id: string) => {
     Alert.alert('Excluir Manutenção', 'Deseja remover este registro do histórico e do banco de dados?', [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
-          try {
-            await StorageService.deleteMaintenance(id);
-            await loadData();
-            NotificationService.syncMaintenanceNotifications().catch(() => {});
-          } catch (err: any) {
-            Alert.alert(
-              'Modo Offline',
-              err?.message || 'Não é possível excluir informações do banco de dados enquanto estiver offline.'
-            );
-          }
+          await StorageService.deleteMaintenance(id);
+          await loadData();
+          NotificationService.syncMaintenanceNotifications().catch(() => { });
         },
       },
     ]);
@@ -457,16 +449,10 @@ export default function MaintenancesScreen() {
     : [];
 
   const wearStatus = vehicle
-    ? Calculations.getWearItemsStatus(vehicle.currentOdometer, maintenances, vehicle)
+    ? Calculations.getWearItemsStatus(vehicle.currentOdometer, maintenances)
     : { brake: null, tire: null };
 
-  const listTotalSpent = maintenances.reduce((acc, m) => acc + m.cost, 0);
-  const totalSpent =
-    vehicle?.gastoManutencao != null &&
-    (vehicle.qtdManutencoes ?? 0) >= maintenances.length &&
-    vehicle.gastoManutencao >= listTotalSpent
-      ? vehicle.gastoManutencao
-      : listTotalSpent;
+  const totalSpent = maintenances.reduce((acc, m) => acc + m.cost, 0);
 
   const theme = {
     bg: isDark ? '#090D16' : '#F8FAFC',
@@ -625,8 +611,8 @@ export default function MaintenancesScreen() {
                                       ? 'rgba(59, 130, 246, 0.25)'
                                       : 'rgba(59, 130, 246, 0.15)'
                                     : isDark
-                                    ? '#1E293B'
-                                    : '#E2E8F0',
+                                      ? '#1E293B'
+                                      : '#E2E8F0',
                                 },
                               ]}
                             >
@@ -978,10 +964,10 @@ export default function MaintenancesScreen() {
                           ? item.kmRemaining <= 0
                             ? `Atrasado há ${Math.abs(item.kmRemaining).toLocaleString('pt-BR')} km`
                             : isAlerta
-                            ? `Alerta: faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
-                            : isAtencao
-                            ? `Atenção: faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
-                            : `Faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
+                              ? `Alerta: faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
+                              : isAtencao
+                                ? `Atenção: faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
+                                : `Faltam ${item.kmRemaining.toLocaleString('pt-BR')} km`
                           : '--'}
                       </Text>
                       <Text style={[styles.alertCostText, { color: theme.textMuted }]}>
@@ -1049,9 +1035,39 @@ export default function MaintenancesScreen() {
         )}
 
         {/* MODAL: REGISTRAR MANUTENÇÃO */}
-        <Modal visible={modalMntVisible} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={[styles.modalContent, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+        <Modal
+          visible={modalMntVisible}
+          transparent
+          animationType="slide"
+          statusBarTranslucent={true}
+          onRequestClose={() => {
+            if (!savingMnt) setModalMntVisible(false);
+          }}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalOverlay}
+          >
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => {
+                if (keyboardVisible) {
+                  Keyboard.dismiss();
+                } else if (!savingMnt) {
+                  setModalMntVisible(false);
+                }
+              }}
+            />
+            <View
+              style={[
+                styles.modalContent,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.cardBorder,
+                  maxHeight: keyboardVisible ? '92%' : '88%',
+                },
+              ]}
+            >
               <View style={styles.modalHeader}>
                 <View>
                   <Text style={[styles.modalTitle, { color: theme.text }]}>Lançar Manutenção</Text>
@@ -1068,7 +1084,16 @@ export default function MaintenancesScreen() {
                 </TouchableOpacity>
               </View>
 
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+              <ScrollView
+                ref={modalMntScrollRef}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                automaticallyAdjustKeyboardInsets={true}
+                contentContainerStyle={{
+                  gap: 12,
+                  paddingBottom: keyboardVisible ? 140 : 30,
+                }}
+              >
                 {/* CATEGORIAS */}
                 <View style={styles.inputGroup}>
                   <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Categoria do Serviço:</Text>
@@ -1161,6 +1186,7 @@ export default function MaintenancesScreen() {
                     style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
                     value={title}
                     onChangeText={setTitle}
+                    onFocus={() => scrollToMntInput(80)}
                     placeholder="Ex: Troca de Óleo 5W30 + Filtros"
                     placeholderTextColor={theme.textMuted}
                   />
@@ -1199,6 +1225,7 @@ export default function MaintenancesScreen() {
                       keyboardType="numeric"
                       value={cost}
                       onChangeText={setCost}
+                      onFocus={() => scrollToMntInput(160)}
                       placeholder="Ex: 380,00"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -1211,6 +1238,7 @@ export default function MaintenancesScreen() {
                       keyboardType="numeric"
                       value={odometer}
                       onChangeText={setOdometer}
+                      onFocus={() => scrollToMntInput(160)}
                       placeholder="Ex: 38450"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -1225,6 +1253,7 @@ export default function MaintenancesScreen() {
                       style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
                       value={workshop}
                       onChangeText={setWorkshop}
+                      onFocus={() => scrollToMntInput(240)}
                       placeholder="Ex: Oficina Bosch"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -1238,6 +1267,7 @@ export default function MaintenancesScreen() {
                         keyboardType="numeric"
                         value={nextIntervalKm}
                         onChangeText={setNextIntervalKm}
+                        onFocus={() => scrollToMntInput(240)}
                         placeholder="Ex: 10000"
                         placeholderTextColor={theme.textMuted}
                       />
@@ -1272,13 +1302,43 @@ export default function MaintenancesScreen() {
                 </TouchableOpacity>
               </ScrollView>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
 
         {/* MODAL: CADASTRO E EDIÇÃO DE PERIODICIDADE DE MANUTENÇÃO */}
-        <Modal visible={modalPeriodicVisible} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={[styles.modalContent, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+        <Modal
+          visible={modalPeriodicVisible}
+          transparent
+          animationType="slide"
+          statusBarTranslucent={true}
+          onRequestClose={() => {
+            if (!savingPeriodic) setModalPeriodicVisible(false);
+          }}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalOverlay}
+          >
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => {
+                if (keyboardVisible) {
+                  Keyboard.dismiss();
+                } else if (!savingPeriodic) {
+                  setModalPeriodicVisible(false);
+                }
+              }}
+            />
+            <View
+              style={[
+                styles.modalContent,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.cardBorder,
+                  maxHeight: keyboardVisible ? '92%' : '88%',
+                },
+              ]}
+            >
               <View style={styles.modalHeader}>
                 <View>
                   <Text style={[styles.modalTitle, { color: theme.text }]}>
@@ -1297,7 +1357,16 @@ export default function MaintenancesScreen() {
                 </TouchableOpacity>
               </View>
 
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14 }}>
+              <ScrollView
+                ref={modalPeriodicScrollRef}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                automaticallyAdjustKeyboardInsets={true}
+                contentContainerStyle={{
+                  gap: 14,
+                  paddingBottom: keyboardVisible ? 160 : 30,
+                }}
+              >
                 <Text style={[styles.periodicIntro, { color: theme.textMuted }]}>
                   Configure os ciclos de manutenção preventiva para manter o painel de alertas atualizado:
                 </Text>
@@ -1316,6 +1385,7 @@ export default function MaintenancesScreen() {
                       keyboardType="numeric"
                       value={periodicUltimaRevKm}
                       onChangeText={setPeriodicUltimaRevKm}
+                      onFocus={() => scrollToPeriodicInput(60)}
                       placeholder="Ex: 50000"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -1329,6 +1399,7 @@ export default function MaintenancesScreen() {
                         keyboardType="numeric"
                         value={periodicRevKm}
                         onChangeText={setPeriodicRevKm}
+                        onFocus={() => scrollToPeriodicInput(140)}
                         placeholder="Ex: 10000"
                         placeholderTextColor={theme.textMuted}
                       />
@@ -1341,6 +1412,7 @@ export default function MaintenancesScreen() {
                         keyboardType="numeric"
                         value={periodicRevMes}
                         onChangeText={setPeriodicRevMes}
+                        onFocus={() => scrollToPeriodicInput(140)}
                         placeholder="Ex: 12"
                         placeholderTextColor={theme.textMuted}
                       />
@@ -1362,6 +1434,7 @@ export default function MaintenancesScreen() {
                       keyboardType="numeric"
                       value={periodicUltimaTrocaOleoKm}
                       onChangeText={setPeriodicUltimaTrocaOleoKm}
+                      onFocus={() => scrollToPeriodicInput(240)}
                       placeholder="Ex: 55000"
                       placeholderTextColor={theme.textMuted}
                     />
@@ -1375,6 +1448,7 @@ export default function MaintenancesScreen() {
                         keyboardType="numeric"
                         value={periodicTrocaOleoKm}
                         onChangeText={setPeriodicTrocaOleoKm}
+                        onFocus={() => scrollToPeriodicInput(320)}
                         placeholder={isMoto ? 'Ex: 3000' : 'Ex: 10000'}
                         placeholderTextColor={theme.textMuted}
                       />
@@ -1387,6 +1461,7 @@ export default function MaintenancesScreen() {
                         keyboardType="numeric"
                         value={periodicTrocaOleoMeses}
                         onChangeText={setPeriodicTrocaOleoMeses}
+                        onFocus={() => scrollToPeriodicInput(320)}
                         placeholder="Ex: 6"
                         placeholderTextColor={theme.textMuted}
                       />
@@ -1412,6 +1487,7 @@ export default function MaintenancesScreen() {
                           keyboardType="numeric"
                           value={periodicUltimaLubCorrenteKm}
                           onChangeText={setPeriodicUltimaLubCorrenteKm}
+                          onFocus={() => scrollToPeriodicInput(440)}
                           placeholder="Ex: 12000"
                           placeholderTextColor={theme.textMuted}
                         />
@@ -1423,6 +1499,7 @@ export default function MaintenancesScreen() {
                           keyboardType="numeric"
                           value={periodicLubCorrenteKm}
                           onChangeText={setPeriodicLubCorrenteKm}
+                          onFocus={() => scrollToPeriodicInput(440)}
                           placeholder="Ex: 500"
                           placeholderTextColor={theme.textMuted}
                         />
@@ -1439,6 +1516,7 @@ export default function MaintenancesScreen() {
                           keyboardType="numeric"
                           value={periodicUltimaEsticarCorrenteKm}
                           onChangeText={setPeriodicUltimaEsticarCorrenteKm}
+                          onFocus={() => scrollToPeriodicInput(540)}
                           placeholder="Ex: 11500"
                           placeholderTextColor={theme.textMuted}
                         />
@@ -1450,6 +1528,7 @@ export default function MaintenancesScreen() {
                           keyboardType="numeric"
                           value={periodicEsticarCorrenteKm}
                           onChangeText={setPeriodicEsticarCorrenteKm}
+                          onFocus={() => scrollToPeriodicInput(540)}
                           placeholder="Ex: 1500"
                           placeholderTextColor={theme.textMuted}
                         />
@@ -1488,7 +1567,7 @@ export default function MaintenancesScreen() {
                 </TouchableOpacity>
               </ScrollView>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       </View>
     </SafeAreaView>
@@ -1969,6 +2048,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 20,
     maxHeight: '88%',
+    flexShrink: 1,
     gap: 12,
   },
   modalHeader: {
