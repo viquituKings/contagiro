@@ -16,6 +16,17 @@ export interface Vehicle {
   photoUrl?: string;
   flexEfficiencyRatio?: number; // Padrão 0.70 (70%)
   
+  // Datas de cadastro e histórico de transferência
+  createdAt?: string; // Data de cadastro original (ex: '2024-05-10')
+  transferredAt?: string; // Data de transferência para o usuário atual (ex: '2024-11-08')
+  transferredFrom?: string; // E-mail do usuário anterior que realizou a transferência
+  
+  // Compartilhamento de veículo com múltiplos usuários
+  ownerEmail?: string; // E-mail do proprietário original
+  isShared?: boolean; // Se o veículo foi compartilhado com o usuário atual (apenas visualização/lançamentos)
+  sharedWith?: string[]; // Lista de e-mails com quem o proprietário compartilhou o veículo
+  sharedAt?: string; // Data em que o compartilhamento foi realizado
+  
   // Campos integrados com o Firestore / app anterior
   vehicleType?: VehicleType;
   engineDisplacement?: number; // Cilindrada em cc
@@ -70,6 +81,7 @@ export interface Refueling {
   distanceTraveled?: number; // km rodados desde o último tanque cheio
   consumptionKmPerLiter?: number; // km/L
   costPerKm?: number; // R$/km
+  registeredBy?: string; // Nome/e-mail do usuário que registrou o abastecimento
 }
 
 export type MaintenanceCategory =
@@ -103,6 +115,9 @@ export interface MaintenanceItem {
   isCompleted: boolean;
   side?: string; // Código do lado (ex: 'DIANTEIRO_ESQUERDO', 'DIANTEIRO', etc.)
   sideLabel?: string; // Descrição amigável do lado (ex: "Dianteiro Esquerdo")
+  notes?: string; // Observações adicionais sobre o serviço/peças
+  receiptUrl?: string; // URL remota (Firebase Storage) ou base64 data URI da nota fiscal / ordem de serviço
+  registeredBy?: string; // Nome/e-mail do usuário que registrou a manutenção
 }
 
 export interface MaintenanceAlert {

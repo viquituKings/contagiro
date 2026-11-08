@@ -1,3 +1,5 @@
+import { auth } from '@/services/firebase';
+import { pickAndOptimizeImage, promptImageSource, uploadToFirebaseStorageOrFallback } from '@/services/image-picker';
 import { Calculations } from '@/services/calculations';
 import { NotificationService } from '@/services/notifications';
 import { StorageService } from '@/services/storage';
@@ -26,11 +28,12 @@ import {
   useColorScheme,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function MaintenancesScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const insets = useSafeAreaInsets();
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [vehicle, setVehicle] = useState<Vehicle | null>(null);
@@ -48,7 +51,8 @@ export default function MaintenancesScreen() {
   const [savingMnt, setSavingMnt] = useState(false);
   const [savingPeriodic, setSavingPeriodic] = useState(false);
 
-  // Formulário: Registrar Manutenção
+  // Formulário: Registrar / Editar Manutenção
+  const [editingMntId, setEditingMntId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState<MaintenanceCategory>('oleo_filtro');
   const [cost, setCost] = useState('');
@@ -58,6 +62,14 @@ export default function MaintenancesScreen() {
   const [selectedSide, setSelectedSide] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [notes, setNotes] = useState('');
+  const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(false);
+
+  // Detalhes da Manutenção e Zoom de Comprovante
+  const [selectedMntDetails, setSelectedMntDetails] = useState<MaintenanceItem | null>(null);
+  const [detailsModalVisible, setDetailsModalVisible] = useState(false);
+  const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
 
   // Formulário: Cadastro e Edição de Periodicidade
   const [periodicUltimaRevKm, setPeriodicUltimaRevKm] = useState('');
@@ -193,19 +205,19 @@ export default function MaintenancesScreen() {
   // Categorias disponíveis filtradas conforme o perfil do veículo
   const availableCategories: { id: MaintenanceCategory; label: string; defaultTitle: string; defaultInterval: string }[] = isMoto
     ? [
-      { id: 'oleo_filtro', label: 'Óleo e Filtros', defaultTitle: 'Troca de Óleo e Filtros', defaultInterval: '3000' },
-      { id: 'revisao_geral', label: 'Revisão Geral', defaultTitle: 'Revisão Geral Periódica', defaultInterval: '6000' },
+      { id: 'oleo_filtro', label: 'Óleo e Filtros', defaultTitle: 'Troca de Óleo e Filtros', defaultInterval: String(vehicle?.trocaOleoKm || 3000) },
+      { id: 'revisao_geral', label: 'Revisão Geral', defaultTitle: 'Revisão Geral Periódica', defaultInterval: String(vehicle?.revisaoKm || 6000) },
       { id: 'freios', label: 'Pastilhas/Lonas de Freio', defaultTitle: 'Troca de Pastilhas/Lonas de Freio', defaultInterval: '' },
       { id: 'troca_pneus', label: 'Troca de Pneus', defaultTitle: 'Substituição de Pneu', defaultInterval: '' },
-      { id: 'lubrificar_corrente', label: 'Lubrificar Corrente', defaultTitle: 'Lubrificação da Corrente/Relação', defaultInterval: '500' },
-      { id: 'esticar_corrente', label: 'Esticar Corrente', defaultTitle: 'Ajuste e Tensão da Corrente', defaultInterval: '1500' },
+      { id: 'lubrificar_corrente', label: 'Lubrificar Corrente', defaultTitle: 'Lubrificação da Corrente/Relação', defaultInterval: String(vehicle?.lubrificarCorrenteKm || 500) },
+      { id: 'esticar_corrente', label: 'Esticar Corrente', defaultTitle: 'Ajuste e Tensão da Corrente', defaultInterval: String(vehicle?.esticarCorrenteKm || 1500) },
       { id: 'suspensao', label: 'Suspensão', defaultTitle: 'Manutenção da Suspensão', defaultInterval: '20000' },
       { id: 'bateria', label: 'Bateria e Elétrica', defaultTitle: 'Substituição da Bateria', defaultInterval: '30000' },
       { id: 'outros', label: 'Outras Manutenções', defaultTitle: 'Serviço Diverso', defaultInterval: '' },
     ]
     : [
-      { id: 'oleo_filtro', label: 'Óleo e Filtros', defaultTitle: 'Troca de Óleo e Filtros', defaultInterval: '10000' },
-      { id: 'revisao_geral', label: 'Revisão Geral', defaultTitle: 'Revisão Geral Periódica', defaultInterval: '10000' },
+      { id: 'oleo_filtro', label: 'Óleo e Filtros', defaultTitle: 'Troca de Óleo e Filtros', defaultInterval: String(vehicle?.trocaOleoKm || 10000) },
+      { id: 'revisao_geral', label: 'Revisão Geral', defaultTitle: 'Revisão Geral Periódica', defaultInterval: String(vehicle?.revisaoKm || 10000) },
       { id: 'freios', label: 'Pastilhas/Lonas de Freio', defaultTitle: 'Troca de Pastilhas/Lonas de Freio', defaultInterval: '' },
       { id: 'troca_pneus', label: 'Troca de Pneus', defaultTitle: 'Substituição de Pneu(s)', defaultInterval: '' },
       { id: 'alinhamento_balanceamento', label: 'Alinhamento & Balanceamento', defaultTitle: 'Alinhamento 3D + Balanceamento', defaultInterval: '10000' },
@@ -241,6 +253,23 @@ export default function MaintenancesScreen() {
       { id: 'TODOS_4', label: 'Todos os 4 Pneus' },
     ];
 
+  const getIntervalForCategory = (catId: MaintenanceCategory): string => {
+    if (catId === 'revisao_geral') {
+      return String(vehicle?.revisaoKm || (isMoto ? 6000 : 10000));
+    }
+    if (catId === 'oleo_filtro') {
+      return String(vehicle?.trocaOleoKm || (isMoto ? 3000 : 10000));
+    }
+    if (catId === 'lubrificar_corrente') {
+      return String(vehicle?.lubrificarCorrenteKm || 500);
+    }
+    if (catId === 'esticar_corrente') {
+      return String(vehicle?.esticarCorrenteKm || 1500);
+    }
+    const found = availableCategories.find((c) => c.id === catId);
+    return found?.defaultInterval || '';
+  };
+
   const handleSelectCategory = (catId: MaintenanceCategory) => {
     setCategory(catId);
     const found = availableCategories.find((c) => c.id === catId);
@@ -248,14 +277,35 @@ export default function MaintenancesScreen() {
       if (!title || availableCategories.some((c) => c.defaultTitle === title)) {
         setTitle(found.defaultTitle);
       }
-      setNextIntervalKm(found.defaultInterval);
     }
+    setNextIntervalKm(getIntervalForCategory(catId));
     // Reseta lado caso mude para categoria que não exige lado
     if (catId !== 'freios' && catId !== 'troca_pneus') {
       setSelectedSide('');
     } else if (!selectedSide) {
       setSelectedSide(catId === 'freios' ? 'DIANTEIRA' : (isMoto ? 'TRASEIRA' : 'DIANTEIRO_ESQUERDO'));
     }
+  };
+
+  const getCategoryLabel = (catId: MaintenanceCategory) => {
+    const allKnown = [
+      ...availableCategories,
+      { id: 'oleo_filtro', label: 'Óleo e Filtros' },
+      { id: 'revisao_geral', label: 'Revisão Geral' },
+      { id: 'freios', label: 'Pastilhas/Lonas de Freio' },
+      { id: 'troca_pneus', label: 'Troca de Pneus' },
+      { id: 'alinhamento_balanceamento', label: 'Alinhamento & Balanceamento' },
+      { id: 'rodizio_pneus', label: 'Rodízio de Pneus' },
+      { id: 'lubrificar_corrente', label: 'Lubrificar Corrente' },
+      { id: 'esticar_corrente', label: 'Esticar Corrente' },
+      { id: 'suspensao', label: 'Suspensão' },
+      { id: 'ar_condicionado', label: 'Ar Condicionado' },
+      { id: 'bateria', label: 'Bateria e Elétrica' },
+      { id: 'documentacao', label: 'IPVA e Seguro' },
+      { id: 'outros', label: 'Outras Manutenções' },
+    ];
+    const found = allKnown.find((c) => c.id === catId);
+    return found ? found.label : catId;
   };
 
   const handleOpenMaintenanceModal = (
@@ -267,6 +317,7 @@ export default function MaintenancesScreen() {
       Alert.alert('Atenção', 'Cadastre ou selecione um veículo primeiro.');
       return;
     }
+    setEditingMntId(null);
     const catToUse = preselectedCategory || 'oleo_filtro';
     handleSelectCategory(catToUse);
     if (customTitle) {
@@ -274,9 +325,91 @@ export default function MaintenancesScreen() {
     }
     setCost('');
     setWorkshop('');
+    setNotes('');
+    setReceiptUrl(null);
+    setReceiptLoading(false);
     setOdometer(String(vehicle.currentOdometer || 0));
     setSelectedDate(new Date());
+    setNextIntervalKm(getIntervalForCategory(catToUse));
     setModalMntVisible(true);
+  };
+
+  const handleEditMaintenance = (item: MaintenanceItem) => {
+    if (isSwitchingVehicle) return;
+    setDetailsModalVisible(false);
+    setEditingMntId(item.id);
+    setCategory(item.category);
+    setTitle(item.title);
+    setCost(String(item.cost));
+    setOdometer(String(item.odometer));
+    setWorkshop(item.workshop || '');
+    setSelectedSide(item.side || '');
+    setNotes(item.notes || '');
+    setReceiptUrl(item.receiptUrl || null);
+    setReceiptLoading(false);
+
+    if (item.nextDueOdometer && item.nextDueOdometer > item.odometer) {
+      setNextIntervalKm(String(item.nextDueOdometer - item.odometer));
+    } else {
+      const found = availableCategories.find((c) => c.id === item.category);
+      setNextIntervalKm(found?.defaultInterval || '10000');
+    }
+
+    try {
+      if (item.date) {
+        const parts = item.date.split('-');
+        if (parts.length === 3) {
+          const year = parseInt(parts[0], 10);
+          const month = parseInt(parts[1], 10) - 1;
+          const day = parseInt(parts[2], 10);
+          setSelectedDate(new Date(year, month, day, 12, 0, 0));
+        } else {
+          setSelectedDate(new Date(item.date));
+        }
+      } else {
+        setSelectedDate(new Date());
+      }
+    } catch {
+      setSelectedDate(new Date());
+    }
+
+    setModalMntVisible(true);
+  };
+
+  const handleAttachReceipt = async () => {
+    if (savingMnt || receiptLoading) return;
+    const source = await promptImageSource(
+      'Nota Fiscal / Ordem de Serviço',
+      'Como você deseja anexar o documento da manutenção?'
+    );
+    if (!source) return;
+
+    setReceiptLoading(true);
+    try {
+      const result = await pickAndOptimizeImage(source, {
+        maxWidth: 1024,
+        compress: 0.65,
+        allowsEditing: false,
+      });
+
+      if (result) {
+        const cleanEmail = (auth.currentUser?.email || 'receipts').toLowerCase().trim();
+        const safeVehId = (vehicle?.id || 'doc').replace(/[^\w-]/g, '_');
+        const storagePath = `users/${cleanEmail}/receipts/${safeVehId}_${Date.now()}.jpg`;
+        const uploadedOrBase64 = await uploadToFirebaseStorageOrFallback(result, storagePath);
+        setReceiptUrl(uploadedOrBase64);
+      }
+    } catch (err) {
+      console.error('Erro ao anexar comprovante da manutenção:', err);
+      Alert.alert('Erro', 'Não foi possível processar a imagem do comprovante.');
+    } finally {
+      setReceiptLoading(false);
+    }
+  };
+
+  const handleOpenDetails = (item: MaintenanceItem) => {
+    setSelectedMntDetails(item);
+    setDetailsModalVisible(true);
   };
 
   // Abre modal de periodicidade (para cadastro inicial ou edição a qualquer momento)
@@ -404,12 +537,14 @@ export default function MaintenancesScreen() {
     }
 
     const nextDueOdometer =
-      !isNaN(nextInterval) && nextInterval > 0 ? odomNum + nextInterval : undefined;
+      !isNaN(nextInterval) && nextInterval > 0
+        ? (nextInterval > odomNum ? nextInterval : odomNum + nextInterval)
+        : undefined;
 
     setSavingMnt(true);
     try {
-      const newMnt: MaintenanceItem = {
-        id: 'mnt-' + Date.now(),
+      const mntToSave: MaintenanceItem = {
+        id: editingMntId || ('mnt-' + Date.now()),
         vehicleId: vehicle.id,
         date: getLocalDateString(selectedDate),
         odometer: odomNum,
@@ -421,10 +556,14 @@ export default function MaintenancesScreen() {
         isCompleted: true,
         side: selectedSide || undefined,
         sideLabel: sideLabel || undefined,
+        notes: notes.trim() || undefined,
+        receiptUrl: receiptUrl || undefined,
+        registeredBy: editingMntId ? selectedMntDetails?.registeredBy : undefined,
       };
 
-      await StorageService.addMaintenance(newMnt);
+      await StorageService.addMaintenance(mntToSave);
       setModalMntVisible(false);
+      setEditingMntId(null);
       await loadData();
       NotificationService.syncMaintenanceNotifications().catch(() => { });
     } catch (err) {
@@ -442,6 +581,10 @@ export default function MaintenancesScreen() {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
+          if (selectedMntDetails?.id === id) {
+            setDetailsModalVisible(false);
+            setSelectedMntDetails(null);
+          }
           await StorageService.deleteMaintenance(id);
           await loadData();
           NotificationService.syncMaintenanceNotifications().catch(() => { });
@@ -477,6 +620,13 @@ export default function MaintenancesScreen() {
 
   // Verifica se a categoria atual não tem periodicidade
   const isNoPeriodCategory = category === 'outros' || category === 'freios' || category === 'troca_pneus';
+
+  const parsedOdom = parseInt(odometer, 10);
+  const parsedInterval = parseInt(nextIntervalKm, 10);
+  const calculatedNextDueKm =
+    !isNaN(parsedOdom) && !isNaN(parsedInterval) && parsedInterval > 0
+      ? (parsedInterval > parsedOdom ? parsedInterval : parsedOdom + parsedInterval)
+      : null;
 
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safeArea, { backgroundColor: theme.bg }]}>
@@ -1022,11 +1172,15 @@ export default function MaintenancesScreen() {
               </View>
             }
             renderItem={({ item }) => (
-              <View style={[styles.historyCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => handleOpenDetails(item)}
+                style={[styles.historyCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+              >
                 <View style={styles.historyTopRow}>
-                  <View style={{ flex: 1 }}>
+                  <View style={{ flex: 1, paddingRight: 8 }}>
                     <Text style={[styles.historyTitle, { color: theme.text }]}>{item.title}</Text>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
                       <Text style={[styles.historyDate, { color: theme.textMuted }]}>
                         {formatDateToBR(item.date)} • {item.odometer.toLocaleString('pt-BR')} km
                       </Text>
@@ -1037,34 +1191,70 @@ export default function MaintenancesScreen() {
                           </Text>
                         </View>
                       )}
+                      {Boolean(item.notes) && (
+                        <View
+                          style={[
+                            styles.attachmentBadge,
+                            { backgroundColor: isDark ? 'rgba(148, 163, 184, 0.15)' : 'rgba(100, 116, 139, 0.1)' },
+                          ]}
+                        >
+                          <Ionicons name="chatbubble-ellipses-outline" size={11} color={theme.textMuted} />
+                          <Text style={[styles.attachmentBadgeText, { color: theme.textMuted }]}>Obs</Text>
+                        </View>
+                      )}
                     </View>
                   </View>
-                  <TouchableOpacity onPress={() => handleDelete(item.id)} style={{ padding: 4 }}>
-                    <Ionicons name="trash-outline" size={17} color={theme.red} />
-                  </TouchableOpacity>
+
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <TouchableOpacity
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        handleEditMaintenance(item);
+                      }}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      style={{ padding: 4 }}
+                    >
+                      <Ionicons name="create-outline" size={17} color={theme.blue} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        handleDelete(item.id);
+                      }}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      style={{ padding: 4 }}
+                    >
+                      <Ionicons name="trash-outline" size={17} color={theme.red} />
+                    </TouchableOpacity>
+                    <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
+                  </View>
                 </View>
 
                 <View style={styles.historyBottomRow}>
-                  <Text style={[styles.workshopText, { color: theme.textMuted }]}>
+                  <Text style={[styles.workshopText, { color: theme.textMuted }]} numberOfLines={1}>
                     {item.workshop ? `Oficina: ${item.workshop}` : 'Oficina não informada'}
                   </Text>
                   <Text style={[styles.historyCost, { color: theme.blue }]}>
                     R$ {item.cost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                   </Text>
                 </View>
-              </View>
+              </TouchableOpacity>
             )}
           />
         )}
 
-        {/* MODAL: REGISTRAR MANUTENÇÃO */}
+        {/* MODAL: REGISTRAR / EDITAR MANUTENÇÃO */}
         <Modal
           visible={modalMntVisible}
           transparent
           animationType="slide"
           statusBarTranslucent={true}
           onRequestClose={() => {
-            if (!savingMnt) setModalMntVisible(false);
+            if (!savingMnt) {
+              setModalMntVisible(false);
+              setEditingMntId(null);
+            }
           }}
         >
           <KeyboardAvoidingView
@@ -1078,6 +1268,7 @@ export default function MaintenancesScreen() {
                   Keyboard.dismiss();
                 } else if (!savingMnt) {
                   setModalMntVisible(false);
+                  setEditingMntId(null);
                 }
               }}
             />
@@ -1088,18 +1279,26 @@ export default function MaintenancesScreen() {
                   backgroundColor: theme.card,
                   borderColor: theme.cardBorder,
                   maxHeight: keyboardVisible ? '92%' : '88%',
+                  paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 24 : 16),
                 },
               ]}
             >
               <View style={styles.modalHeader}>
                 <View>
-                  <Text style={[styles.modalTitle, { color: theme.text }]}>Lançar Manutenção</Text>
+                  <Text style={[styles.modalTitle, { color: theme.text }]}>
+                    {editingMntId ? 'Editar Manutenção' : 'Lançar Manutenção'}
+                  </Text>
                   <Text style={[styles.modalSubtitle, { color: theme.textMuted }]}>
                     {vehicle?.name} ({vehicle?.plate})
                   </Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => !savingMnt && setModalMntVisible(false)}
+                  onPress={() => {
+                    if (!savingMnt) {
+                      setModalMntVisible(false);
+                      setEditingMntId(null);
+                    }
+                  }}
                   disabled={savingMnt}
                   style={{ opacity: savingMnt ? 0.5 : 1 }}
                 >
@@ -1291,10 +1490,118 @@ export default function MaintenancesScreen() {
                         value={nextIntervalKm}
                         onChangeText={setNextIntervalKm}
                         onFocus={() => scrollToMntInput(240)}
-                        placeholder="Ex: 10000"
+                        placeholder={getIntervalForCategory(category) || '10000'}
                         placeholderTextColor={theme.textMuted}
                       />
+                      {Boolean(calculatedNextDueKm) && (
+                        <Text style={[styles.inputHelperText, { color: theme.accent }]}>
+                          Prevista aos {calculatedNextDueKm?.toLocaleString('pt-BR')} km
+                        </Text>
+                      )}
                     </View>
+                  )}
+                </View>
+
+                {/* OBSERVAÇÕES */}
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Observações (Opcional):</Text>
+                  <TextInput
+                    style={[
+                      styles.input,
+                      styles.textArea,
+                      { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder },
+                    ]}
+                    multiline
+                    numberOfLines={3}
+                    textAlignVertical="top"
+                    value={notes}
+                    onChangeText={setNotes}
+                    onFocus={() => scrollToMntInput(320)}
+                    placeholder="Ex: Peças originais trocadas, garantia de 6 meses..."
+                    placeholderTextColor={theme.textMuted}
+                  />
+                </View>
+
+                {/* NOTA FISCAL / ORDEM DE SERVIÇO */}
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                    Nota Fiscal / Ordem de Serviço (Opcional):
+                  </Text>
+
+                  {receiptLoading ? (
+                    <View style={[styles.receiptAttachBox, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                      <ActivityIndicator size="small" color={theme.blue} />
+                      <Text style={[styles.receiptAttachText, { color: theme.textMuted }]}>
+                        Processando imagem...
+                      </Text>
+                    </View>
+                  ) : receiptUrl ? (
+                    <View style={[styles.receiptPreviewContainer, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                      <TouchableOpacity
+                        onPress={() => setFullScreenImage(receiptUrl)}
+                        style={styles.receiptPreviewTouchable}
+                        activeOpacity={0.8}
+                      >
+                        <Image source={{ uri: receiptUrl }} style={styles.receiptThumb} resizeMode="cover" />
+                        <View style={styles.receiptPreviewMeta}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                            <Ionicons name="document-attach" size={15} color={theme.blue} />
+                            <Text style={[styles.receiptAttachedTitle, { color: theme.text }]}>
+                              Comprovante Anexado
+                            </Text>
+                          </View>
+                          <Text style={[styles.receiptAttachedHint, { color: theme.textMuted }]}>
+                            Toque na foto para ampliar
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+
+                      <View style={styles.receiptActionsRow}>
+                        <TouchableOpacity
+                          style={[styles.receiptActionBtn, { borderColor: theme.cardBorder }]}
+                          onPress={handleAttachReceipt}
+                          disabled={savingMnt}
+                        >
+                          <Ionicons name="camera-reverse-outline" size={14} color={theme.blue} />
+                          <Text style={[styles.receiptActionBtnText, { color: theme.blue }]}>Alterar</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[styles.receiptActionBtn, { borderColor: theme.cardBorder }]}
+                          onPress={() => setReceiptUrl(null)}
+                          disabled={savingMnt}
+                        >
+                          <Ionicons name="trash-outline" size={14} color={theme.red} />
+                          <Text style={[styles.receiptActionBtnText, { color: theme.red }]}>Remover</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={[
+                        styles.receiptAttachBox,
+                        {
+                          backgroundColor: theme.bg,
+                          borderColor: isDark ? '#334155' : '#CBD5E1',
+                        },
+                      ]}
+                      onPress={handleAttachReceipt}
+                      disabled={savingMnt}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[styles.receiptIconCircle, { backgroundColor: theme.blueLight }]}>
+                        <Ionicons name="document-attach-outline" size={22} color={theme.blue} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.receiptAttachTitle, { color: theme.text }]}>
+                          Anexar Foto da Nota Fiscal ou OS
+                        </Text>
+                        <Text style={[styles.receiptAttachSub, { color: theme.textMuted }]}>
+                          Tirar foto ou selecionar da galeria
+                        </Text>
+                      </View>
+                      <Ionicons name="add-circle-outline" size={22} color={theme.blue} />
+                    </TouchableOpacity>
                   )}
                 </View>
 
@@ -1317,10 +1624,14 @@ export default function MaintenancesScreen() {
                   {savingMnt ? (
                     <>
                       <ActivityIndicator size="small" color="#FFFFFF" />
-                      <Text style={styles.saveBtnText}>Salvando Manutenção...</Text>
+                      <Text style={styles.saveBtnText}>
+                        {editingMntId ? 'Salvando Alterações...' : 'Salvando Manutenção...'}
+                      </Text>
                     </>
                   ) : (
-                    <Text style={styles.saveBtnText}>Salvar Manutenção</Text>
+                    <Text style={styles.saveBtnText}>
+                      {editingMntId ? 'Salvar Alterações' : 'Salvar Manutenção'}
+                    </Text>
                   )}
                 </TouchableOpacity>
               </ScrollView>
@@ -1359,6 +1670,7 @@ export default function MaintenancesScreen() {
                   backgroundColor: theme.card,
                   borderColor: theme.cardBorder,
                   maxHeight: keyboardVisible ? '92%' : '88%',
+                  paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 24 : 16),
                 },
               ]}
             >
@@ -1591,6 +1903,301 @@ export default function MaintenancesScreen() {
               </ScrollView>
             </View>
           </KeyboardAvoidingView>
+        </Modal>
+
+        {/* MODAL: DETALHES DA MANUTENÇÃO */}
+        <Modal
+          visible={detailsModalVisible}
+          transparent
+          animationType="slide"
+          statusBarTranslucent={true}
+          onRequestClose={() => setDetailsModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setDetailsModalVisible(false)} />
+            <View
+              style={[
+                styles.modalContent,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.cardBorder,
+                  maxHeight: '90%',
+                  paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 24 : 16),
+                },
+              ]}
+            >
+              <View style={styles.modalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.modalTitle, { color: theme.text }]}>Detalhes da Manutenção</Text>
+                  <Text style={[styles.modalSubtitle, { color: theme.textMuted }]}>
+                    {vehicle?.name} ({vehicle?.plate})
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setDetailsModalVisible(false)}>
+                  <Ionicons name="close-circle" size={24} color={theme.textMuted} />
+                </TouchableOpacity>
+              </View>
+
+              {selectedMntDetails && (
+                <>
+                  <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={{ gap: 14, paddingBottom: 16 }}
+                  >
+                    {/* CARD DE IDENTIFICAÇÃO DO SERVIÇO */}
+                    <View
+                      style={[
+                        styles.detailHeroCard,
+                        {
+                          backgroundColor: theme.bg,
+                          borderColor: theme.cardBorder,
+                        },
+                      ]}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <View style={[styles.categoryBadge, { backgroundColor: theme.blueLight }]}>
+                          <Text style={[styles.categoryBadgeText, { color: theme.blue }]}>
+                            {getCategoryLabel(selectedMntDetails.category)}
+                          </Text>
+                        </View>
+                        <Text style={[styles.detailHeroCost, { color: theme.blue }]}>
+                          R$ {selectedMntDetails.cost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        </Text>
+                      </View>
+
+                      <Text style={[styles.detailHeroTitle, { color: theme.text }]}>
+                        {selectedMntDetails.title}
+                      </Text>
+
+                      {Boolean(selectedMntDetails.sideLabel || selectedMntDetails.side) && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                          <Ionicons name="git-commit-outline" size={14} color={theme.textMuted} />
+                          <Text style={[styles.detailMetaText, { color: theme.textMuted }]}>
+                            Posição / Lado:{' '}
+                            <Text style={{ fontWeight: '700', color: theme.text }}>
+                              {selectedMntDetails.sideLabel || selectedMntDetails.side}
+                            </Text>
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {/* INFORMAÇÕES TÉCNICAS */}
+                    <View
+                      style={[
+                        styles.sectionCard,
+                        { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                      ]}
+                    >
+                      <Text style={[styles.sectionTitle, { color: theme.text }]}>Informações Técnicas</Text>
+
+                      <View style={styles.detailRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <Ionicons name="calendar-outline" size={16} color={theme.blue} />
+                          <Text style={[styles.detailLabel, { color: theme.textMuted }]}>Data:</Text>
+                        </View>
+                        <Text style={[styles.detailValue, { color: theme.text }]}>
+                          {formatDateToBR(selectedMntDetails.date)}
+                        </Text>
+                      </View>
+
+                      <View style={styles.detailRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <Ionicons name="speedometer-outline" size={16} color={theme.blue} />
+                          <Text style={[styles.detailLabel, { color: theme.textMuted }]}>Quilometragem:</Text>
+                        </View>
+                        <Text style={[styles.detailValue, { color: theme.text }]}>
+                          {selectedMntDetails.odometer.toLocaleString('pt-BR')} km
+                        </Text>
+                      </View>
+
+                      <View style={styles.detailRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <Ionicons name="business-outline" size={16} color={theme.blue} />
+                          <Text style={[styles.detailLabel, { color: theme.textMuted }]}>Oficina / Local:</Text>
+                        </View>
+                        <Text style={[styles.detailValue, { color: theme.text }]}>
+                          {selectedMntDetails.workshop || 'Não informada'}
+                        </Text>
+                      </View>
+
+                      {selectedMntDetails.nextDueOdometer ? (
+                        <View style={styles.detailRow}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Ionicons name="arrow-redo-outline" size={16} color={theme.accent} />
+                            <Text style={[styles.detailLabel, { color: theme.textMuted }]}>Próxima prevista:</Text>
+                          </View>
+                          <Text style={[styles.detailValue, { color: theme.accent, fontWeight: '800' }]}>
+                            {selectedMntDetails.nextDueOdometer.toLocaleString('pt-BR')} km
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {selectedMntDetails.registeredBy ? (
+                        <View style={styles.detailRow}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Ionicons name="person-outline" size={16} color={theme.textMuted} />
+                            <Text style={[styles.detailLabel, { color: theme.textMuted }]}>Registrado por:</Text>
+                          </View>
+                          <Text style={[styles.detailValue, { color: theme.text, fontWeight: '700' }]}>
+                            {selectedMntDetails.registeredBy}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    {/* OBSERVAÇÕES */}
+                    {selectedMntDetails.notes ? (
+                      <View
+                        style={[
+                          styles.sectionCard,
+                          { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                        ]}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Ionicons name="reader-outline" size={16} color={theme.blue} />
+                          <Text style={[styles.sectionTitle, { color: theme.text }]}>Observações</Text>
+                        </View>
+                        <Text style={[styles.notesBodyText, { color: theme.text }]}>
+                          {selectedMntDetails.notes}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    {/* COMPROVANTE / NOTA FISCAL / ORDEM DE SERVIÇO */}
+                    <View
+                      style={[
+                        styles.sectionCard,
+                        { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                      ]}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Ionicons name="receipt-outline" size={16} color={theme.blue} />
+                          <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                            Nota Fiscal / Ordem de Serviço
+                          </Text>
+                        </View>
+                        {selectedMntDetails.receiptUrl && (
+                          <View style={[styles.attachmentBadge, { backgroundColor: theme.blueLight }]}>
+                            <Text style={[styles.attachmentBadgeText, { color: theme.blue }]}>Anexada</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      {selectedMntDetails.receiptUrl ? (
+                        <View style={styles.receiptDetailWrapper}>
+                          <TouchableOpacity
+                            activeOpacity={0.85}
+                            onPress={() => setFullScreenImage(selectedMntDetails.receiptUrl || null)}
+                            style={[
+                              styles.receiptImageContainer,
+                              { borderColor: theme.cardBorder, backgroundColor: isDark ? '#000000' : '#F1F5F9' },
+                            ]}
+                          >
+                            <Image
+                              source={{ uri: selectedMntDetails.receiptUrl }}
+                              style={styles.receiptDetailImage}
+                              resizeMode="contain"
+                            />
+                            <View style={styles.receiptZoomOverlay}>
+                              <Ionicons name="expand" size={14} color="#FFFFFF" />
+                              <Text style={styles.receiptZoomText}>Toque para ampliar</Text>
+                            </View>
+                          </TouchableOpacity>
+                        </View>
+                      ) : (
+                        <View style={[styles.noReceiptBox, { backgroundColor: theme.card }]}>
+                          <Ionicons name="document-outline" size={28} color={theme.textMuted} />
+                          <Text style={[styles.noReceiptText, { color: theme.textMuted }]}>
+                            Nenhum documento ou nota fiscal anexada a esta manutenção.
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </ScrollView>
+
+                  {/* AÇÕES FIXAS NO RODAPÉ DO MODAL (SAFE AREA GARANTIDA) */}
+                  <View style={[styles.detailActionsRow, { borderTopColor: theme.cardBorder }]}>
+                    <TouchableOpacity
+                      style={[
+                        styles.deleteDetailBtn,
+                        { borderColor: isDark ? '#7F1D1D' : '#FCA5A5' },
+                      ]}
+                      onPress={() => handleDelete(selectedMntDetails.id)}
+                    >
+                      <Ionicons name="trash-outline" size={16} color={theme.red} />
+                      <Text style={[styles.deleteDetailBtnText, { color: theme.red }]}>Excluir</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.editDetailBtn,
+                        { borderColor: theme.cardBorder, backgroundColor: theme.bg },
+                      ]}
+                      onPress={() => handleEditMaintenance(selectedMntDetails)}
+                    >
+                      <Ionicons name="create-outline" size={16} color={theme.blue} />
+                      <Text style={[styles.editDetailBtnText, { color: theme.blue }]}>Editar</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.closeDetailBtn, { backgroundColor: theme.blue, flex: 1 }]}
+                      onPress={() => setDetailsModalVisible(false)}
+                    >
+                      <Text style={styles.closeDetailBtnText}>Fechar</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* MODAL: VISUALIZADOR DE IMAGEM EM TELA CHEIA */}
+        <Modal
+          visible={!!fullScreenImage}
+          transparent
+          animationType="fade"
+          statusBarTranslucent={true}
+          onRequestClose={() => setFullScreenImage(null)}
+        >
+          <View style={styles.fullScreenOverlay}>
+            <SafeAreaView style={styles.fullScreenSafeArea}>
+              <View style={styles.fullScreenHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons name="receipt-outline" size={20} color="#FFFFFF" />
+                  <Text style={styles.fullScreenHeaderTitle}>Comprovante / NF / OS</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.fullScreenCloseBtn}
+                  onPress={() => setFullScreenImage(null)}
+                  hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+                >
+                  <Ionicons name="close" size={26} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.fullScreenImageWrapper}>
+                {fullScreenImage ? (
+                  <Image
+                    source={{ uri: fullScreenImage }}
+                    style={styles.fullScreenImage}
+                    resizeMode="contain"
+                  />
+                ) : null}
+              </View>
+
+              <View style={styles.fullScreenFooter}>
+                <TouchableOpacity
+                  style={styles.fullScreenCloseFooterBtn}
+                  onPress={() => setFullScreenImage(null)}
+                >
+                  <Text style={styles.fullScreenCloseFooterText}>Fechar Visualização</Text>
+                </TouchableOpacity>
+              </View>
+            </SafeAreaView>
+          </View>
         </Modal>
       </View>
     </SafeAreaView>
@@ -2156,6 +2763,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
+  inputHelperText: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
+  },
   saveBtn: {
     paddingVertical: 14,
     borderRadius: 14,
@@ -2186,5 +2798,289 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     marginTop: 4,
+  },
+  attachmentBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  attachmentBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  textArea: {
+    minHeight: 70,
+    paddingTop: 8,
+  },
+  receiptAttachBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    padding: 12,
+    gap: 12,
+  },
+  receiptIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  receiptAttachTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  receiptAttachSub: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+  receiptAttachText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  receiptPreviewContainer: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 10,
+    gap: 10,
+  },
+  receiptPreviewTouchable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  receiptThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    backgroundColor: '#000000',
+  },
+  receiptPreviewMeta: {
+    flex: 1,
+    gap: 2,
+  },
+  receiptAttachedTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  receiptAttachedHint: {
+    fontSize: 11,
+  },
+  receiptActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(150, 150, 150, 0.15)',
+    paddingTop: 8,
+  },
+  receiptActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  receiptActionBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  detailHeroCard: {
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 6,
+  },
+  categoryBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  categoryBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  detailHeroCost: {
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  detailHeroTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  detailMetaText: {
+    fontSize: 12,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 3,
+  },
+  detailLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  detailValue: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  notesBodyText: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  receiptDetailWrapper: {
+    marginTop: 6,
+  },
+  receiptImageContainer: {
+    width: '100%',
+    height: 220,
+    borderRadius: 12,
+    borderWidth: 1,
+    overflow: 'hidden',
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  receiptDetailImage: {
+    width: '100%',
+    height: '100%',
+  },
+  receiptZoomOverlay: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  receiptZoomText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  noReceiptBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    gap: 6,
+    marginTop: 4,
+  },
+  noReceiptText: {
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  detailActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingTop: 12,
+    borderTopWidth: 1,
+  },
+  deleteDetailBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  deleteDetailBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  editDetailBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  editDetailBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  closeDetailBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+  },
+  closeDetailBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  fullScreenOverlay: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  fullScreenSafeArea: {
+    flex: 1,
+    justifyContent: 'space-between',
+  },
+  fullScreenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  fullScreenHeaderTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  fullScreenCloseBtn: {
+    padding: 6,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderRadius: 20,
+  },
+  fullScreenImageWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 8,
+  },
+  fullScreenImage: {
+    width: '100%',
+    height: '100%',
+  },
+  fullScreenFooter: {
+    padding: 16,
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  fullScreenCloseFooterBtn: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingVertical: 10,
+    paddingHorizontal: 24,
+    borderRadius: 20,
+  },
+  fullScreenCloseFooterText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });

@@ -25,9 +25,10 @@ import {
   useColorScheme,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function RefuelingsScreen() {
+  const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -41,6 +42,11 @@ export default function RefuelingsScreen() {
   const [saving, setSaving] = useState(false);
   const [isSelectorExpanded, setIsSelectorExpanded] = useState(false);
   const latestSwitchRequestId = useRef(0);
+
+  // Detalhes do Abastecimento e Edição
+  const [selectedRefuelingDetails, setSelectedRefuelingDetails] = useState<Refueling | null>(null);
+  const [detailsModalVisible, setDetailsModalVisible] = useState(false);
+  const [editingRefuelingId, setEditingRefuelingId] = useState<string | null>(null);
 
   // Formulário de Abastecimento
   const [odometer, setOdometer] = useState('');
@@ -206,12 +212,42 @@ export default function RefuelingsScreen() {
     }
   };
 
+  const handleOpenDetails = (item: Refueling) => {
+    setSelectedRefuelingDetails(item);
+    setDetailsModalVisible(true);
+  };
+
+  const handleEditRefueling = (item: Refueling) => {
+    if (isSwitchingVehicle) return;
+    setDetailsModalVisible(false);
+    setEditingRefuelingId(item.id);
+    setOdometer(String(item.odometer));
+    setFuelType(item.fuelType);
+    setPricePerLiter(item.pricePerLiter ? item.pricePerLiter.toFixed(2).replace('.', ',') : '');
+    setTotalAmount(item.totalAmount ? item.totalAmount.toFixed(2).replace('.', ',') : '');
+    setLiters(item.liters ? item.liters.toFixed(2).replace('.', ',') : '');
+    setIsFullTank(item.isFullTank);
+    setIsAdditivated(Boolean(item.isAdditivated));
+    setNotes(item.notes || item.gasStation || '');
+    if (item.date) {
+      try {
+        const [y, m, d] = item.date.split('T')[0].split('-');
+        setSelectedDate(new Date(Number(y), Number(m) - 1, Number(d)));
+      } catch {
+        setSelectedDate(new Date());
+      }
+    }
+    setShowDatePicker(false);
+    setModalVisible(true);
+  };
+
   const handleOpenModal = async () => {
     if (isSwitchingVehicle) return;
     if (!vehicle) {
       Alert.alert('Atenção', 'Cadastre ou selecione um veículo na Garagem antes de abastecer.');
       return;
     }
+    setEditingRefuelingId(null);
     setOdometer(String(vehicle.currentOdometer || ''));
     const initialFuel =
       vehicle.acceptedFuelTypes && vehicle.acceptedFuelTypes.length > 0
@@ -265,7 +301,7 @@ export default function RefuelingsScreen() {
           : litersNum;
 
       const newRef: Refueling = {
-        id: 'ref-' + Date.now(),
+        id: editingRefuelingId || ('ref-' + Date.now()),
         vehicleId: vehicle.id,
         plate: vehicle.plate,
         date: getLocalDateString(selectedDate),
@@ -278,10 +314,14 @@ export default function RefuelingsScreen() {
         isAdditivated,
         notes: notes.trim() || undefined,
         gasStation: notes.trim() || undefined,
+        registeredBy: editingRefuelingId
+          ? selectedRefuelingDetails?.registeredBy
+          : undefined,
       };
 
       await StorageService.addRefueling(newRef);
       setModalVisible(false);
+      setEditingRefuelingId(null);
       await loadData();
     } catch (err) {
       console.error('Erro ao salvar abastecimento:', err);
@@ -312,7 +352,7 @@ export default function RefuelingsScreen() {
       return;
     }
 
-    if (odomNum < vehicle.currentOdometer) {
+    if (!editingRefuelingId && odomNum < vehicle.currentOdometer) {
       Alert.alert(
         'Atenção',
         `A quilometragem informada (${odomNum} km) é menor que a atual (${vehicle.currentOdometer} km). Deseja continuar?`,
@@ -337,6 +377,7 @@ export default function RefuelingsScreen() {
         text: 'Excluir',
         style: 'destructive',
         onPress: async () => {
+          setDetailsModalVisible(false);
           await StorageService.deleteRefueling(id, vehicle?.id);
           await loadData();
         },
@@ -688,7 +729,11 @@ export default function RefuelingsScreen() {
               </View>
             }
             renderItem={({ item }) => (
-              <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => handleOpenDetails(item)}
+                style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}
+              >
                 <View style={styles.cardTopRow}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
                     <View
@@ -726,7 +771,10 @@ export default function RefuelingsScreen() {
 
                   <TouchableOpacity
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    onPress={() => handleDelete(item.id)}
+                    onPress={(e) => {
+                      e.stopPropagation?.();
+                      handleDelete(item.id);
+                    }}
                   >
                     <Ionicons name="trash-outline" size={17} color="#EF4444" />
                   </TouchableOpacity>
@@ -780,10 +828,254 @@ export default function RefuelingsScreen() {
                     </Text>
                   )}
                 </View>
-              </View>
+              </TouchableOpacity>
             )}
           />
         )}
+
+        {/* MODAL: DETALHES DO ABASTECIMENTO */}
+        <Modal
+          visible={detailsModalVisible}
+          transparent
+          animationType="slide"
+          statusBarTranslucent={true}
+          onRequestClose={() => setDetailsModalVisible(false)}
+        >
+          <View style={styles.detailsModalOverlay}>
+            <View
+              style={[
+                styles.detailsModalContent,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.cardBorder,
+                  paddingBottom: Math.max(insets.bottom, 16) + 8,
+                },
+              ]}
+            >
+              {selectedRefuelingDetails && (
+                <>
+                  {/* BARRA SUPERIOR DO MODAL DE DETALHES */}
+                  <View style={[styles.detailsModalHeader, { borderBottomColor: theme.cardBorder }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.detailsModalTitle, { color: theme.text }]}>
+                        Detalhes do Abastecimento
+                      </Text>
+                      <Text style={[styles.detailsModalSubtitle, { color: theme.textMuted }]}>
+                        {formatDateToBR(selectedRefuelingDetails.date)} • {vehicle?.name || 'Veículo'}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setDetailsModalVisible(false)}
+                      style={[styles.closeIconBtn, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}
+                    >
+                      <Ionicons name="close" size={18} color={theme.text} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView
+                    style={{ flex: 1 }}
+                    contentContainerStyle={styles.detailsScrollContent}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    {/* CARD: INFORMAÇÕES GERAIS */}
+                    <View style={[styles.detailsSectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailRowLeft}>
+                          <Ionicons name="flame-outline" size={16} color={getFuelBadgeColor(selectedRefuelingDetails.fuelType)} />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Combustível:</Text>
+                        </View>
+                        <View
+                          style={[
+                            styles.fuelBadge,
+                            { backgroundColor: getFuelBadgeColor(selectedRefuelingDetails.fuelType) + '22' },
+                          ]}
+                        >
+                          <Text style={[styles.fuelBadgeText, { color: getFuelBadgeColor(selectedRefuelingDetails.fuelType) }]}>
+                            {selectedRefuelingDetails.fuelType.toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailRowLeft}>
+                          <Ionicons name="flash-outline" size={16} color="#3B82F6" />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Aditivado:</Text>
+                        </View>
+                        <Text style={[styles.detailRowValue, { color: selectedRefuelingDetails.isAdditivated ? '#3B82F6' : theme.text }]}>
+                          {selectedRefuelingDetails.isAdditivated ? 'Sim' : 'Não'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailRowLeft}>
+                          <Ionicons name="water-outline" size={16} color="#10B981" />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Status do Tanque:</Text>
+                        </View>
+                        <Text style={[styles.detailRowValue, { color: selectedRefuelingDetails.isFullTank ? '#10B981' : theme.text }]}>
+                          {selectedRefuelingDetails.isFullTank ? 'Tanque Cheio' : 'Abastecimento Parcial'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* CARD: VALORES E VOLUME */}
+                    <View style={[styles.detailsSectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailRowLeft}>
+                          <Ionicons name="cash-outline" size={16} color={theme.accent} />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Valor Total:</Text>
+                        </View>
+                        <Text style={[styles.detailRowValue, { color: theme.accent, fontWeight: '800', fontSize: 16 }]}>
+                          R$ {selectedRefuelingDetails.totalAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </Text>
+                      </View>
+
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailRowLeft}>
+                          <Ionicons name="color-fill-outline" size={16} color={theme.blue} />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Quantidade:</Text>
+                        </View>
+                        <Text style={[styles.detailRowValue, { color: theme.text }]}>
+                          {selectedRefuelingDetails.liters.toFixed(2)} L
+                        </Text>
+                      </View>
+
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailRowLeft}>
+                          <Ionicons name="pricetag-outline" size={16} color={theme.textMuted} />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Preço por Litro:</Text>
+                        </View>
+                        <Text style={[styles.detailRowValue, { color: theme.text }]}>
+                          R$ {selectedRefuelingDetails.pricePerLiter.toFixed(2)} / L
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* CARD: QUILOMETRAGEM E DESEMPENHO */}
+                    <View style={[styles.detailsSectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailRowLeft}>
+                          <Ionicons name="speedometer-outline" size={16} color={theme.textMuted} />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Quilometragem:</Text>
+                        </View>
+                        <Text style={[styles.detailRowValue, { color: theme.text, fontWeight: '700' }]}>
+                          {selectedRefuelingDetails.odometer.toLocaleString('pt-BR')} km
+                        </Text>
+                      </View>
+
+                      {selectedRefuelingDetails.previousOdometer != null && (
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="arrow-back-outline" size={16} color={theme.textMuted} />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Km Anterior:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.text }]}>
+                            {selectedRefuelingDetails.previousOdometer.toLocaleString('pt-BR')} km
+                          </Text>
+                        </View>
+                      )}
+
+                      {selectedRefuelingDetails.distanceTraveled != null && selectedRefuelingDetails.distanceTraveled > 0 && (
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="navigate-outline" size={16} color={theme.accent} />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Distância Rodada:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.accent, fontWeight: '700' }]}>
+                            +{selectedRefuelingDetails.distanceTraveled.toLocaleString('pt-BR')} km
+                          </Text>
+                        </View>
+                      )}
+
+                      {selectedRefuelingDetails.consumptionKmPerLiter ? (
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="speedometer" size={16} color={theme.accent} />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Média de Consumo:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.accent, fontWeight: '800' }]}>
+                            {selectedRefuelingDetails.consumptionKmPerLiter} km/L
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {selectedRefuelingDetails.costPerKm ? (
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="cash" size={16} color={theme.blue} />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Custo por Km:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.blue, fontWeight: '700' }]}>
+                            R$ {selectedRefuelingDetails.costPerKm.toFixed(2)}/km
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    {/* OBSERVAÇÕES / POSTO */}
+                    {(selectedRefuelingDetails.notes || selectedRefuelingDetails.gasStation) ? (
+                      <View style={[styles.detailsSectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                          <Ionicons name="reader-outline" size={16} color={theme.blue} />
+                          <Text style={[styles.detailsSectionTitle, { color: theme.text }]}>Observações / Posto</Text>
+                        </View>
+                        <Text style={[styles.detailsNotesText, { color: theme.text }]}>
+                          {selectedRefuelingDetails.notes || selectedRefuelingDetails.gasStation}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    {/* AUDITORIA: REGISTRADO POR */}
+                    {selectedRefuelingDetails.registeredBy ? (
+                      <View style={[styles.detailsSectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="person-outline" size={16} color={theme.blue} />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Registrado por:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.text, fontWeight: '700' }]}>
+                            {selectedRefuelingDetails.registeredBy}
+                          </Text>
+                        </View>
+                      </View>
+                    ) : null}
+                  </ScrollView>
+
+                  {/* AÇÕES FIXAS NO RODAPÉ DO MODAL */}
+                  <View style={[styles.detailsActionsRow, { borderTopColor: theme.cardBorder }]}>
+                    <TouchableOpacity
+                      style={[
+                        styles.deleteDetailBtn,
+                        { borderColor: isDark ? '#7F1D1D' : '#FCA5A5' },
+                      ]}
+                      onPress={() => handleDelete(selectedRefuelingDetails.id)}
+                    >
+                      <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                      <Text style={[styles.deleteDetailBtnText, { color: '#EF4444' }]}>Excluir</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.editDetailBtn,
+                        { borderColor: theme.cardBorder, backgroundColor: theme.bg },
+                      ]}
+                      onPress={() => handleEditRefueling(selectedRefuelingDetails)}
+                    >
+                      <Ionicons name="create-outline" size={16} color={theme.blue} />
+                      <Text style={[styles.editDetailBtnText, { color: theme.blue }]}>Editar</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.closeDetailBtn, { backgroundColor: theme.accent, flex: 1 }]}
+                      onPress={() => setDetailsModalVisible(false)}
+                    >
+                      <Text style={styles.closeDetailBtnText}>Fechar</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
 
         {/* MODAL NOVO ABASTECIMENTO */}
         <Modal
@@ -821,7 +1113,9 @@ export default function RefuelingsScreen() {
             >
               <View style={styles.modalHeader}>
                 <View>
-                  <Text style={[styles.modalTitle, { color: theme.text }]}>Novo Abastecimento</Text>
+                  <Text style={[styles.modalTitle, { color: theme.text }]}>
+                    {editingRefuelingId ? 'Editar Abastecimento' : 'Novo Abastecimento'}
+                  </Text>
                   <Text style={[styles.modalSubtitle, { color: theme.textMuted }]}>
                     {vehicle?.name} ({vehicle?.plate})
                   </Text>
@@ -1027,10 +1321,14 @@ export default function RefuelingsScreen() {
                   {saving ? (
                     <>
                       <ActivityIndicator size="small" color="#FFFFFF" />
-                      <Text style={styles.saveBtnText}>Salvando Abastecimento...</Text>
+                      <Text style={styles.saveBtnText}>
+                        {editingRefuelingId ? 'Atualizando...' : 'Salvando Abastecimento...'}
+                      </Text>
                     </>
                   ) : (
-                    <Text style={styles.saveBtnText}>Salvar Abastecimento</Text>
+                    <Text style={styles.saveBtnText}>
+                      {editingRefuelingId ? 'Atualizar Abastecimento' : 'Salvar Abastecimento'}
+                    </Text>
                   )}
                 </TouchableOpacity>
               </ScrollView>
@@ -1491,6 +1789,126 @@ const styles = StyleSheet.create({
   saveBtnText: {
     color: '#FFFFFF',
     fontSize: 15,
+    fontWeight: '800',
+  },
+  detailsModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'flex-end',
+  },
+  detailsModalContent: {
+    maxHeight: '90%',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+  },
+  detailsModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+  },
+  detailsModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  detailsModalSubtitle: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  closeIconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  detailsScrollContent: {
+    paddingVertical: 16,
+    gap: 12,
+  },
+  detailsSectionCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 14,
+    gap: 10,
+  },
+  detailsSectionTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  detailsNotesText: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  detailRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  detailRowLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  detailRowValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  detailsActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingTop: 14,
+    borderTopWidth: 1,
+  },
+  deleteDetailBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  deleteDetailBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  editDetailBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  editDetailBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  closeDetailBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeDetailBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '800',
   },
 });

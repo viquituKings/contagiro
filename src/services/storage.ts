@@ -162,16 +162,31 @@ export function deduplicateMaintenances(list: MaintenanceItem[]): {
       unique.push(item);
     } else {
       const existing = seen.get(fp)!;
+      // Garante a preservação de comprovantes anexados e observações
+      const mergedItem: MaintenanceItem = {
+        ...(existing.id.startsWith('mnt-') && !item.id.startsWith('mnt-') ? item : existing),
+        receiptUrl: item.receiptUrl || existing.receiptUrl,
+        notes: item.notes || existing.notes,
+        workshop: item.workshop || existing.workshop,
+        side: item.side || existing.side,
+        sideLabel: item.sideLabel || existing.sideLabel,
+      };
+
       if (existing.id.startsWith('mnt-') && !item.id.startsWith('mnt-')) {
         const idx = unique.indexOf(existing);
         if (idx >= 0) {
           duplicateIds.push(existing.id);
-          unique[idx] = item;
-          seen.set(fp, item);
+          unique[idx] = mergedItem;
+          seen.set(fp, mergedItem);
         } else {
           duplicateIds.push(item.id);
         }
       } else {
+        const idx = unique.indexOf(existing);
+        if (idx >= 0) {
+          unique[idx] = mergedItem;
+          seen.set(fp, mergedItem);
+        }
         duplicateIds.push(item.id);
       }
     }
@@ -340,6 +355,17 @@ export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknow
         ? Number(data.order)
         : undefined,
     isPreferred: Boolean(data.preferido ?? data.isPreferred),
+    createdAt: (data.dataCadastro as string) || (data.createdAt as string) || undefined,
+    transferredAt: (data.dataTransferencia as string) || (data.transferredAt as string) || undefined,
+    transferredFrom: (data.transferidoDe as string) || (data.transferredFrom as string) || undefined,
+    ownerEmail: (data.ownerEmail as string) || (data.proprietarioEmail as string) || undefined,
+    isShared: Boolean(data.isShared || data.compartilhado),
+    sharedWith: Array.isArray(data.sharedWith)
+      ? data.sharedWith.map(String)
+      : Array.isArray(data.compartilhadoCom)
+      ? data.compartilhadoCom.map(String)
+      : undefined,
+    sharedAt: (data.sharedAt as string) || (data.compartilhadoEm as string) || undefined,
   };
 }
 
@@ -398,6 +424,7 @@ export function mapFirestoreDocToRefueling(id: string, data: Record<string, unkn
     distanceTraveled,
     consumptionKmPerLiter,
     costPerKm,
+    registeredBy: (data.registradoPor as string) || (data.registeredBy as string) || undefined,
   };
 }
 
@@ -443,6 +470,9 @@ export function mapFirestoreDocToMaintenance(
     nextDueDate: data.nextDueDate ? String(data.nextDueDate) : undefined,
     isCompleted: true,
     side: rawSide || undefined,
+    notes: (data.observacoes as string) || (data.notes as string) || undefined,
+    receiptUrl: (data.receiptUrl as string) || (data.notaFiscalUrl as string) || (data.fotoComprovante as string) || undefined,
+    registeredBy: (data.registradoPor as string) || (data.registeredBy as string) || undefined,
   };
 }
 
@@ -465,6 +495,15 @@ let hasCheckedLegacyMedias = false;
 let isPreloading = false;
 let hasPreloadedOfflineData = false;
 const maintenanceChangeListeners = new Set<() => void>();
+
+export function getCurrentUserAttribution(): string {
+  const user = auth.currentUser;
+  if (!user) return 'Usuário';
+  if (user.displayName && user.email) {
+    return `${user.displayName} (${user.email})`;
+  }
+  return user.displayName || user.email || 'Usuário';
+}
 
 async function saveVehicleTotalizersToCacheMap(
   vehicleId: string,
@@ -515,6 +554,29 @@ export function isDemoRecord(r?: { id?: string; vehicleId?: string } | null): bo
   return false;
 }
 
+/**
+ * Identifica se um veículo é um resíduo/fantasma sem dados de identificação válidos
+ * (ex: quando um documento no Firestore foi parcialmente recriado após exclusão ou transferência)
+ */
+export function isPhantomVehicle(
+  v?: { plate?: string; brand?: string; model?: string; name?: string } | null
+): boolean {
+  if (!v) return true;
+  const plate = (v.plate || '').toUpperCase().trim();
+  const brand = (v.brand || '').trim();
+  const model = (v.model || '').toLowerCase().trim();
+  const name = (v.name || '').toLowerCase().trim();
+  if (
+    (!plate || plate === 'SEM-PLACA') &&
+    !brand &&
+    (!model || model === 'veículo' || model === 'veiculo') &&
+    (!name || name === 'veículo' || name === 'veiculo')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export const StorageService = {
   /**
    * Verifica rapidamente se há conectividade com a nuvem
@@ -551,7 +613,10 @@ export const StorageService = {
       const json = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
       const preferredId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
       const list: Vehicle[] = json ? JSON.parse(json) : [];
-      const sanitized = list.filter((v) => !isDemoVehicle(v));
+      const sanitized = list.filter((v) => !isDemoVehicle(v) && !isPhantomVehicle(v));
+      if (sanitized.length !== list.length) {
+        AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(sanitized)).catch(() => {});
+      }
       return sortVehiclesByOrder(sanitized, preferredId);
     } catch {
       return [];
@@ -672,17 +737,90 @@ export const StorageService = {
         if (!querySnapshot.empty) {
           for (const d of querySnapshot.docs) {
             const docData = d.data() as Record<string, unknown>;
+            const hasVehicleIdentity = Boolean(
+              docData.placa ||
+              docData.modelo ||
+              docData.marca ||
+              docData.nome ||
+              docData.name ||
+              docData.model
+            );
             const veh = mapFirestoreDocToVehicle(d.id, docData);
-            if (isDemoVehicle(veh)) {
+            if (isDemoVehicle(veh) || !hasVehicleIdentity || isPhantomVehicle(veh)) {
               withFirestoreTimeout(
                 () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', d.id)),
                 1500
               ).catch(() => {});
+              saveAvatarToLocalCache(`vehicle_${d.id}`, null).catch(() => {});
             } else {
               list.push(veh);
             }
           }
         }
+
+        // Sincroniza e descobre veículos compartilhados recebidos de outros usuários
+        try {
+          const sharedPointersSnap = await withFirestoreTimeout(
+            () => getDocs(collection(db, 'users', userEmail, 'veiculos_compartilhados')),
+            1500
+          ).catch(() => null);
+
+          if (sharedPointersSnap && !sharedPointersSnap.empty) {
+            const userKey = userEmail.toLowerCase().trim();
+            for (const spDoc of sharedPointersSnap.docs) {
+              const spData = spDoc.data();
+              const vId = spDoc.id;
+              const owner = String(spData.ownerEmail || '').toLowerCase().trim();
+              if (!owner || owner === userKey) continue;
+
+              try {
+                const ownerVehSnap = await withFirestoreTimeout(
+                  () => getDoc(doc(db, 'users', owner, 'veiculos', vId)),
+                  1500
+                );
+                if (ownerVehSnap.exists()) {
+                  const ovData = ownerVehSnap.data();
+                  const sharedWithList: string[] = Array.isArray(ovData.sharedWith)
+                    ? ovData.sharedWith.map((e: unknown) => String(e).toLowerCase().trim())
+                    : [];
+
+                  if (sharedWithList.includes(userKey)) {
+                    const mappedShared = mapFirestoreDocToVehicle(vId, ovData);
+                    mappedShared.isShared = true;
+                    mappedShared.ownerEmail = owner;
+                    mappedShared.sharedWith = sharedWithList;
+
+                    const existingIdx = list.findIndex((v) => v.id === vId);
+                    if (existingIdx >= 0) {
+                      list[existingIdx] = {
+                        ...list[existingIdx],
+                        ...mappedShared,
+                        isShared: true,
+                        ownerEmail: owner,
+                      };
+                    } else {
+                      list.push(mappedShared);
+                    }
+                  } else {
+                    withFirestoreTimeout(() => deleteDoc(spDoc.ref), 1000).catch(() => {});
+                    withFirestoreTimeout(
+                      () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', vId)),
+                      1000
+                    ).catch(() => {});
+                    list = list.filter((v) => v.id !== vId);
+                  }
+                } else {
+                  withFirestoreTimeout(() => deleteDoc(spDoc.ref), 1000).catch(() => {});
+                  withFirestoreTimeout(
+                    () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', vId)),
+                    1000
+                  ).catch(() => {});
+                  list = list.filter((v) => v.id !== vId);
+                }
+              } catch {}
+            }
+          }
+        } catch {}
 
         const cachedList = await this.getCachedVehicles();
         const totalizersMap = await getVehicleTotalizersFromCacheMap();
@@ -727,6 +865,9 @@ export const StorageService = {
               ...fsVeh,
               ...pv,
               currentOdometer: Math.max(fsVeh.currentOdometer || 0, pv.currentOdometer || 0),
+              createdAt: pv.createdAt || fsVeh.createdAt,
+              transferredAt: pv.transferredAt || fsVeh.transferredAt,
+              transferredFrom: pv.transferredFrom || fsVeh.transferredFrom,
             };
           } else {
             list.push(pv);
@@ -898,6 +1039,12 @@ export const StorageService = {
       }
     }
 
+    if (vehicle.isShared) {
+      throw new Error(
+        'Usuários com acesso compartilhado não podem alterar os dados cadastrais do veículo.'
+      );
+    }
+
     if (isOnline && userEmail) {
       try {
         const isCar = vehicle.vehicleType !== 'moto';
@@ -925,6 +1072,11 @@ export const StorageService = {
           fotoUrl: vehicle.photoUrl || null,
           cadManPeriodica: vehicle.cadManPeriodica ?? false,
         };
+
+        if (vehicle.ownerEmail) docData.ownerEmail = vehicle.ownerEmail;
+        if (vehicle.sharedWith) docData.sharedWith = vehicle.sharedWith;
+        if (vehicle.sharedAt) docData.sharedAt = vehicle.sharedAt;
+        if (vehicle.isShared != null) docData.isShared = vehicle.isShared;
 
         if (vehicle.cadManPeriodica) {
           docData.revisaoKm = vehicle.revisaoKm ?? 10000;
@@ -966,6 +1118,16 @@ export const StorageService = {
         if (vehicle.qtdManutencoes != null) docData.qtdManutencoes = vehicle.qtdManutencoes;
         if (vehicle.order != null) docData.ordem = vehicle.order;
         if (vehicle.isPreferred != null) docData.preferido = vehicle.isPreferred;
+
+        if (vehicle.createdAt) {
+          docData.dataCadastro = vehicle.createdAt;
+        } else {
+          const nowIso = new Date().toISOString().split('T')[0];
+          vehicle.createdAt = nowIso;
+          docData.dataCadastro = nowIso;
+        }
+        if (vehicle.transferredAt) docData.dataTransferencia = vehicle.transferredAt;
+        if (vehicle.transferredFrom) docData.transferidoDe = vehicle.transferredFrom;
 
         const oldId = vehicle.id;
         if (vehicle.id && !vehicle.id.startsWith('veh-')) {
@@ -1023,16 +1185,42 @@ export const StorageService = {
       );
     }
 
+    const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+    const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
+    const vehToDelete = vehicles.find((v) => v.id === vehicleId);
+
+    // Se o veículo for compartilhado por outro usuário, o destinatário apenas sai do compartilhamento
+    if (vehToDelete?.isShared) {
+      await this.leaveSharedVehicle(vehicleId);
+      return;
+    }
+
+    // Se o proprietário estiver excluindo e houver compartilhamentos ativos, revoga o acesso de todos os destinatários
+    if (userEmail && vehToDelete?.sharedWith && vehToDelete.sharedWith.length > 0) {
+      for (const destEmail of vehToDelete.sharedWith) {
+        const destKey = String(destEmail).toLowerCase().trim();
+        if (destKey) {
+          withFirestoreTimeout(
+            () => deleteDoc(doc(db, 'users', destKey, 'veiculos_compartilhados', vehicleId)),
+            2000
+          ).catch(() => {});
+          withFirestoreTimeout(
+            () => deleteDoc(doc(db, 'users', destKey, 'veiculos', vehicleId)),
+            2000
+          ).catch(() => {});
+        }
+      }
+    }
+
     if (userEmail && !vehicleId.startsWith('veh-')) {
       await withFirestoreTimeout(
         () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', vehicleId)),
         2000
       );
-      await SyncService.removeByEntityId(vehicleId);
+      await SyncService.removeByVehicleId(vehicleId);
+      await saveAvatarToLocalCache(`vehicle_${vehicleId}`, null);
     }
 
-    const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
-    const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
     const remaining = vehicles.filter((v) => v.id !== vehicleId);
     if (remaining.length > 0) {
       remaining.forEach((v, idx) => {
@@ -1049,6 +1237,533 @@ export const StorageService = {
       await this.setActiveVehicleId(remaining[0].id);
     }
     this.notifyMaintenanceChange();
+  },
+
+  /**
+   * Compartilha o veículo com outro usuário.
+   * O destinatário poderá visualizar todo o histórico, cadastrar e editar abastecimentos e manutenções.
+   */
+  async shareVehicle(
+    vehicleId: string,
+    targetEmail: string
+  ): Promise<{ success: boolean; sharedWith: string[] }> {
+    const userEmail = auth.currentUser?.email;
+    if (!userEmail) {
+      throw new Error('Nenhum usuário conectado para realizar o compartilhamento.');
+    }
+
+    const online = await checkOnlineStatus(true);
+    if (!online) {
+      throw new Error(
+        'Não é possível compartilhar veículos enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+    }
+
+    const ownerKey = userEmail.toLowerCase().trim();
+    const targetKey = targetEmail.toLowerCase().trim();
+
+    if (!targetKey || !targetKey.includes('@') || !targetKey.includes('.')) {
+      throw new Error('Informe um endereço de e-mail válido para o compartilhamento.');
+    }
+
+    if (ownerKey === targetKey) {
+      throw new Error('Não é possível compartilhar um veículo com você mesmo.');
+    }
+
+    const ownerVehDocRef = doc(db, 'users', ownerKey, 'veiculos', vehicleId);
+    const ownerVehSnap = await withFirestoreTimeout(() => getDoc(ownerVehDocRef), 3500);
+    if (!ownerVehSnap.exists()) {
+      throw new Error('Veículo não encontrado no banco de dados para compartilhamento.');
+    }
+
+    const vehData = ownerVehSnap.data() as Record<string, unknown>;
+    const currentShared: string[] = Array.isArray(vehData.sharedWith)
+      ? vehData.sharedWith.map((e) => String(e).toLowerCase().trim())
+      : Array.isArray(vehData.compartilhadoCom)
+      ? vehData.compartilhadoCom.map((e) => String(e).toLowerCase().trim())
+      : [];
+
+    if (currentShared.includes(targetKey)) {
+      return { success: true, sharedWith: currentShared };
+    }
+
+    const newSharedWith = [...currentShared, targetKey];
+    const nowIso = new Date().toISOString();
+
+    const batch = writeBatch(db);
+
+    // 1. Atualiza lista de compartilhamento no veículo do proprietário
+    batch.set(
+      ownerVehDocRef,
+      {
+        sharedWith: newSharedWith,
+        compartilhadoCom: newSharedWith,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
+
+    // 2. Cria ponteiro na conta do destinatário
+    const sharedPointerDocRef = doc(db, 'users', targetKey, 'veiculos_compartilhados', vehicleId);
+    batch.set(
+      sharedPointerDocRef,
+      {
+        vehicleId,
+        ownerEmail: ownerKey,
+        sharedAt: nowIso,
+      },
+      { merge: true }
+    );
+
+    // 3. Garante documento base do destinatário
+    const targetUserDocRef = doc(db, 'users', targetKey);
+    batch.set(
+      targetUserDocRef,
+      {
+        email: targetKey,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
+
+    // 4. Cria documento espelho do veículo no destinatário para leitura rápida
+    const targetVehDocRef = doc(db, 'users', targetKey, 'veiculos', vehicleId);
+    batch.set(
+      targetVehDocRef,
+      {
+        ...vehData,
+        isShared: true,
+        compartilhado: true,
+        ownerEmail: ownerKey,
+        proprietarioEmail: ownerKey,
+        sharedWith: newSharedWith,
+        compartilhadoCom: newSharedWith,
+        sharedAt: nowIso,
+      },
+      { merge: true }
+    );
+
+    await withFirestoreTimeout(() => batch.commit(), 6000);
+
+    // Atualiza cache local do proprietário
+    const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+    if (cachedRaw) {
+      const vehicles: Vehicle[] = JSON.parse(cachedRaw);
+      const idx = vehicles.findIndex((v) => v.id === vehicleId);
+      if (idx >= 0) {
+        vehicles[idx].sharedWith = newSharedWith;
+        await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(vehicles));
+      }
+    }
+
+    this.notifyMaintenanceChange();
+    return { success: true, sharedWith: newSharedWith };
+  },
+
+  /**
+   * Revoga o acesso compartilhado de um usuário ao veículo.
+   */
+  async unshareVehicle(
+    vehicleId: string,
+    targetEmail: string
+  ): Promise<{ success: boolean; sharedWith: string[] }> {
+    const userEmail = auth.currentUser?.email;
+    if (!userEmail) {
+      throw new Error('Nenhum usuário conectado para revogar o compartilhamento.');
+    }
+
+    const online = await checkOnlineStatus(true);
+    if (!online) {
+      throw new Error(
+        'Não é possível gerenciar compartilhamentos offline. Conecte-se à internet e tente novamente.'
+      );
+    }
+
+    const ownerKey = userEmail.toLowerCase().trim();
+    const targetKey = targetEmail.toLowerCase().trim();
+
+    const ownerVehDocRef = doc(db, 'users', ownerKey, 'veiculos', vehicleId);
+    const ownerVehSnap = await withFirestoreTimeout(() => getDoc(ownerVehDocRef), 3500);
+    if (!ownerVehSnap.exists()) {
+      throw new Error('Veículo não encontrado.');
+    }
+
+    const vehData = ownerVehSnap.data() as Record<string, unknown>;
+    const currentShared: string[] = Array.isArray(vehData.sharedWith)
+      ? vehData.sharedWith.map((e) => String(e).toLowerCase().trim())
+      : Array.isArray(vehData.compartilhadoCom)
+      ? vehData.compartilhadoCom.map((e) => String(e).toLowerCase().trim())
+      : [];
+
+    const newSharedWith = currentShared.filter((e) => e !== targetKey);
+
+    const batch = writeBatch(db);
+    batch.set(
+      ownerVehDocRef,
+      {
+        sharedWith: newSharedWith,
+        compartilhadoCom: newSharedWith,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+
+    // Remove ponteiro e documento espelho no destinatário
+    const sharedPointerDocRef = doc(db, 'users', targetKey, 'veiculos_compartilhados', vehicleId);
+    batch.delete(sharedPointerDocRef);
+
+    const targetVehDocRef = doc(db, 'users', targetKey, 'veiculos', vehicleId);
+    batch.delete(targetVehDocRef);
+
+    await withFirestoreTimeout(() => batch.commit(), 6000);
+
+    // Atualiza cache local do proprietário
+    const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+    if (cachedRaw) {
+      const vehicles: Vehicle[] = JSON.parse(cachedRaw);
+      const idx = vehicles.findIndex((v) => v.id === vehicleId);
+      if (idx >= 0) {
+        vehicles[idx].sharedWith = newSharedWith;
+        await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(vehicles));
+      }
+    }
+
+    this.notifyMaintenanceChange();
+    return { success: true, sharedWith: newSharedWith };
+  },
+
+  /**
+   * Usuário destinatário sai do compartilhamento de um veículo.
+   */
+  async leaveSharedVehicle(vehicleId: string): Promise<void> {
+    const userEmail = auth.currentUser?.email;
+    if (!userEmail) {
+      throw new Error('Nenhum usuário conectado.');
+    }
+
+    const userKey = userEmail.toLowerCase().trim();
+    const online = await checkOnlineStatus(true);
+    if (!online) {
+      throw new Error(
+        'Não é possível sair do compartilhamento offline. Conecte-se à internet e tente novamente.'
+      );
+    }
+
+    // Identifica o proprietário
+    const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+    const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
+    const veh = vehicles.find((v) => v.id === vehicleId);
+    const ownerKey = veh?.ownerEmail?.toLowerCase().trim();
+
+    if (ownerKey && ownerKey !== userKey) {
+      try {
+        const ownerVehDocRef = doc(db, 'users', ownerKey, 'veiculos', vehicleId);
+        const ownerVehSnap = await withFirestoreTimeout(() => getDoc(ownerVehDocRef), 3000);
+        if (ownerVehSnap.exists()) {
+          const vData = ownerVehSnap.data();
+          const currentShared: string[] = Array.isArray(vData.sharedWith)
+            ? vData.sharedWith.map((e: unknown) => String(e).toLowerCase().trim())
+            : [];
+          const updatedShared = currentShared.filter((e) => e !== userKey);
+          await withFirestoreTimeout(
+            () =>
+              setDoc(
+                ownerVehDocRef,
+                { sharedWith: updatedShared, compartilhadoCom: updatedShared },
+                { merge: true }
+              ),
+            2500
+          );
+        }
+      } catch (e) {
+        console.warn('Aviso: falha ao remover membro da lista do proprietário:', e);
+      }
+    }
+
+    // Remove ponteiro e espelho local no Firestore
+    await withFirestoreTimeout(
+      () => deleteDoc(doc(db, 'users', userKey, 'veiculos_compartilhados', vehicleId)),
+      2000
+    ).catch(() => {});
+    await withFirestoreTimeout(
+      () => deleteDoc(doc(db, 'users', userKey, 'veiculos', vehicleId)),
+      2000
+    ).catch(() => {});
+
+    // Remove do cache local
+    const remaining = vehicles.filter((v) => v.id !== vehicleId);
+    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(remaining));
+    await AsyncStorage.removeItem(STORAGE_KEYS.REFUELINGS + '_' + vehicleId);
+    await AsyncStorage.removeItem(STORAGE_KEYS.MAINTENANCES + '_' + vehicleId);
+
+    const activeId = await this.getActiveVehicleId();
+    if (activeId === vehicleId) {
+      if (remaining.length > 0) {
+        await this.setActiveVehicleId(remaining[0].id);
+      } else {
+        await AsyncStorage.removeItem(STORAGE_KEYS.ACTIVE_VEHICLE);
+      }
+    }
+
+    this.notifyMaintenanceChange();
+  },
+
+  /**
+   * Transfere o cadastro de um veículo e todo o seu histórico (abastecimentos e manutenções)
+   * para outro usuário cadastrado no ContaGiro.
+   */
+  async transferVehicle(
+    vehicleId: string,
+    targetEmail: string
+  ): Promise<{ success: boolean; refuelingsCount: number; maintenancesCount: number }> {
+    const userEmail = auth.currentUser?.email;
+    if (!userEmail) {
+      throw new Error('Nenhum usuário conectado para realizar a transferência.');
+    }
+
+    const online = await checkOnlineStatus(true);
+    if (!online) {
+      throw new Error(
+        'Não é possível transferir veículos enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+    }
+
+    const sourceKey = userEmail.toLowerCase().trim();
+    const targetKey = targetEmail.toLowerCase().trim();
+
+    if (!targetKey || !targetKey.includes('@') || !targetKey.includes('.')) {
+      throw new Error('Informe um endereço de e-mail válido para o destinatário.');
+    }
+
+    if (sourceKey === targetKey) {
+      throw new Error('Não é possível transferir um veículo para o seu próprio e-mail.');
+    }
+
+    // 1. Sincroniza qualquer alteração local pendente antes de transferir
+    try {
+      await SyncService.syncNow();
+    } catch {}
+
+    // 2. Valida se o veículo de origem existe no Firestore
+    let effectiveVehId = vehicleId;
+    if (vehicleId.startsWith('veh-')) {
+      const cachedVehicles = await this.getCachedVehicles();
+      const current = cachedVehicles.find((v) => v.id === vehicleId);
+      if (current) {
+        await this.saveVehicle(current);
+        effectiveVehId = current.id;
+      }
+    }
+
+    const sourceVehDocRef = doc(db, 'users', sourceKey, 'veiculos', effectiveVehId);
+    const sourceVehSnap = await withFirestoreTimeout(() => getDoc(sourceVehDocRef), 3500);
+    if (!sourceVehSnap.exists()) {
+      throw new Error('Veículo não encontrado no banco de dados para transferência.');
+    }
+
+    const vehData = sourceVehSnap.data() as Record<string, unknown>;
+    const targetPlate = String(vehData.placa || '').toUpperCase().trim();
+
+    // 3. Verifica se o destinatário já possui um veículo com a mesma placa
+    if (targetPlate) {
+      try {
+        const targetVehColRef = collection(db, 'users', targetKey, 'veiculos');
+        const targetVehsSnap = await withFirestoreTimeout(() => getDocs(targetVehColRef), 3500);
+        const plateAlreadyExists = targetVehsSnap.docs.some(
+          (d) => String(d.data().placa || '').toUpperCase().trim() === targetPlate
+        );
+        if (plateAlreadyExists) {
+          throw new Error(`O usuário destinatário (${targetKey}) já possui um veículo com a placa ${targetPlate}.`);
+        }
+      } catch (e: any) {
+        if (e?.message?.includes('já possui um veículo')) {
+          throw e;
+        }
+      }
+    }
+
+    // 5. Prepara os dados do veículo para o novo proprietário
+    const nowIso = new Date().toISOString().split('T')[0];
+    const dataCadastro = (vehData.dataCadastro as string) || (vehData.createdAt as string) || nowIso;
+    const dataTransferencia = nowIso;
+    const transferidoDe = sourceKey;
+
+    const targetVehData: Record<string, unknown> = {
+      ...vehData,
+      dataCadastro,
+      dataTransferencia,
+      transferidoDe,
+      preferido: false,
+      ordem: 999,
+    };
+
+    // 6. Busca todos os abastecimentos do veículo
+    const sourceRefColRef = collection(db, 'users', sourceKey, 'veiculos', effectiveVehId, 'abastecimentos');
+    const sourceRefSnap = await withFirestoreTimeout(() => getDocs(sourceRefColRef), 5000);
+    const refDocs = sourceRefSnap.docs;
+
+    // 7. Busca todas as manutenções do veículo
+    const sourceMntColRef = collection(db, 'users', sourceKey, 'manutencoes');
+    const sourceMntSnap = await withFirestoreTimeout(() => getDocs(sourceMntColRef), 5000);
+    const mntDocs = sourceMntSnap.docs.filter((d) => {
+      const data = d.data();
+      return String(data.veiculoId || data.idVeiculo || '') === effectiveVehId;
+    });
+
+    // 8. Grava no destinatário e remove da origem em lote atômico (batches)
+    const targetVehDocRef = doc(db, 'users', targetKey, 'veiculos', effectiveVehId);
+
+    type BatchOp =
+      | { type: 'set'; ref: any; data: Record<string, unknown> }
+      | { type: 'delete'; ref: any };
+
+    const ops: BatchOp[] = [];
+
+    // Garante que o documento raiz do usuário de destino exista no Firestore
+    ops.push({
+      type: 'set',
+      ref: doc(db, 'users', targetKey),
+      data: {
+        email: targetKey,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+
+    // Cria veículo no destino
+    ops.push({ type: 'set', ref: targetVehDocRef, data: targetVehData });
+
+    // Copia abastecimentos para o destino
+    for (const rDoc of refDocs) {
+      const targetRefDocRef = doc(
+        db,
+        'users',
+        targetKey,
+        'veiculos',
+        effectiveVehId,
+        'abastecimentos',
+        rDoc.id
+      );
+      ops.push({ type: 'set', ref: targetRefDocRef, data: rDoc.data() });
+    }
+
+    // Copia manutenções para o destino
+    for (const mDoc of mntDocs) {
+      const targetMntDocRef = doc(db, 'users', targetKey, 'manutencoes', mDoc.id);
+      ops.push({ type: 'set', ref: targetMntDocRef, data: mDoc.data() });
+    }
+
+    // Remove abastecimentos da origem
+    for (const rDoc of refDocs) {
+      ops.push({ type: 'delete', ref: rDoc.ref });
+    }
+
+    // Remove manutenções da origem
+    for (const mDoc of mntDocs) {
+      ops.push({ type: 'delete', ref: mDoc.ref });
+    }
+
+    // Remove veículo da origem
+    ops.push({ type: 'delete', ref: sourceVehDocRef });
+
+    // Executa em chunks de 400
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
+      const chunk = ops.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (const op of chunk) {
+        if (op.type === 'set') {
+          batch.set(op.ref, op.data, { merge: true });
+        } else {
+          batch.delete(op.ref);
+        }
+      }
+      await withFirestoreTimeout(() => batch.commit(), 8000);
+    }
+
+    // 9. Garante a exclusão do veículo na origem e limpa caches locais no aparelho do usuário de origem
+    await withFirestoreTimeout(() => deleteDoc(sourceVehDocRef), 3000).catch(() => {});
+    if (effectiveVehId !== vehicleId) {
+      await withFirestoreTimeout(
+        () => deleteDoc(doc(db, 'users', sourceKey, 'veiculos', vehicleId)),
+        3000
+      ).catch(() => {});
+    }
+
+    const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
+    const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
+    const remaining = vehicles.filter((v) => v.id !== effectiveVehId && v.id !== vehicleId);
+
+    if (remaining.length > 0) {
+      remaining.forEach((v, idx) => {
+        v.order = idx;
+        v.isPreferred = idx === 0;
+      });
+      await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, remaining[0].id);
+    } else {
+      await AsyncStorage.removeItem(STORAGE_KEYS.PREFERRED_VEHICLE);
+    }
+    await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(remaining));
+
+    const activeId = await this.getActiveVehicleId();
+    if (activeId === effectiveVehId || activeId === vehicleId) {
+      if (remaining.length > 0) {
+        await this.setActiveVehicleId(remaining[0].id);
+      } else {
+        await AsyncStorage.removeItem(STORAGE_KEYS.ACTIVE_VEHICLE);
+      }
+    }
+
+    // Limpa cache de fotos do veículo transferido
+    await saveAvatarToLocalCache(`vehicle_${effectiveVehId}`, null);
+    if (effectiveVehId !== vehicleId) {
+      await saveAvatarToLocalCache(`vehicle_${vehicleId}`, null);
+    }
+
+    // Limpa caches específicos do veículo
+    await AsyncStorage.removeItem(STORAGE_KEYS.REFUELINGS + '_' + effectiveVehId);
+    await AsyncStorage.removeItem(STORAGE_KEYS.MAINTENANCES + '_' + effectiveVehId);
+    if (effectiveVehId !== vehicleId) {
+      await AsyncStorage.removeItem(STORAGE_KEYS.REFUELINGS + '_' + vehicleId);
+      await AsyncStorage.removeItem(STORAGE_KEYS.MAINTENANCES + '_' + vehicleId);
+    }
+
+    // Limpa registros agregados
+    const allRefsRaw = await AsyncStorage.getItem(STORAGE_KEYS.REFUELINGS);
+    if (allRefsRaw) {
+      const allRefs: Refueling[] = JSON.parse(allRefsRaw);
+      const remRefs = allRefs.filter((r) => r.vehicleId !== effectiveVehId && r.vehicleId !== vehicleId);
+      await AsyncStorage.setItem(STORAGE_KEYS.REFUELINGS, JSON.stringify(remRefs));
+    }
+
+    const allMntsRaw = await AsyncStorage.getItem(STORAGE_KEYS.MAINTENANCES);
+    if (allMntsRaw) {
+      const allMnts: MaintenanceItem[] = JSON.parse(allMntsRaw);
+      const remMnts = allMnts.filter((m) => m.vehicleId !== effectiveVehId && m.vehicleId !== vehicleId);
+      await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(remMnts));
+    }
+
+    // Limpa totalizadores
+    const rawTot = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLE_TOTALIZERS);
+    if (rawTot) {
+      const map = JSON.parse(rawTot);
+      delete map[effectiveVehId];
+      delete map[vehicleId];
+      await AsyncStorage.setItem(STORAGE_KEYS.VEHICLE_TOTALIZERS, JSON.stringify(map));
+    }
+
+    // Limpa todas as operações pendentes associadas a este veículo na fila de sincronização
+    await SyncService.removeByVehicleId(effectiveVehId);
+    if (effectiveVehId !== vehicleId) {
+      await SyncService.removeByVehicleId(vehicleId);
+    }
+
+    this.notifyMaintenanceChange();
+
+    return {
+      success: true,
+      refuelingsCount: refDocs.length,
+      maintenancesCount: mntDocs.length,
+    };
   },
 
   async getActiveVehicleId(): Promise<string | null> {
@@ -1330,6 +2045,12 @@ export const StorageService = {
         const isOnline = await checkOnlineStatus();
         if (isOnline) {
           try {
+            // Não grava totalizadores no Firestore se o veículo já foi excluído ou transferido
+            const currentList = await this.getCachedVehicles();
+            if (!currentList.some((v) => v.id === vehicleId)) {
+              return vehicle;
+            }
+
             await withFirestoreTimeout(
               () =>
                 setDoc(
@@ -1425,12 +2146,22 @@ export const StorageService = {
       const cachedVehicles = await this.getCachedVehicles();
       let vehicles: Vehicle[] = [];
       for (const d of vehSnap.docs) {
-        const v = mapFirestoreDocToVehicle(d.id, d.data() as Record<string, unknown>);
-        if (isDemoVehicle(v)) {
+        const docData = d.data() as Record<string, unknown>;
+        const hasVehicleIdentity = Boolean(
+          docData.placa ||
+          docData.modelo ||
+          docData.marca ||
+          docData.nome ||
+          docData.name ||
+          docData.model
+        );
+        const v = mapFirestoreDocToVehicle(d.id, docData);
+        if (isDemoVehicle(v) || !hasVehicleIdentity || isPhantomVehicle(v)) {
           withFirestoreTimeout(
             () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', d.id)),
             1500
           ).catch(() => {});
+          saveAvatarToLocalCache(`vehicle_${d.id}`, null).catch(() => {});
         } else {
           vehicles.push(v);
         }
@@ -1502,13 +2233,25 @@ export const StorageService = {
 
       for (const pm of pendingMaintenances) {
         const pmFp = getMaintenanceFingerprint(pm);
-        const alreadyInList = allMaintenancesFull.some(
+        const existingIdx = allMaintenancesFull.findIndex(
           (m) => m.id === pm.id || getMaintenanceFingerprint(m) === pmFp
         );
-        if (!alreadyInList) {
+        if (existingIdx === -1) {
           allMaintenancesFull.unshift(pm);
         } else {
-          SyncService.removeByEntityId(pm.id).catch(() => {});
+          const existing = allMaintenancesFull[existingIdx];
+          allMaintenancesFull[existingIdx] = {
+            ...existing,
+            ...pm,
+            id: existing.id || pm.id,
+            receiptUrl: pm.receiptUrl || existing.receiptUrl,
+            notes: pm.notes || existing.notes,
+          };
+          const fsHasReceipt = Boolean(existing.receiptUrl);
+          const pmHasReceipt = Boolean(pm.receiptUrl);
+          if (!pmHasReceipt || fsHasReceipt) {
+            SyncService.removeByEntityId(pm.id).catch(() => {});
+          }
         }
       }
       allMaintenancesFull = deduplicateMaintenances(allMaintenancesFull).unique;
@@ -1812,9 +2555,18 @@ export const StorageService = {
             return this.getCachedRefuelings(vehicleId);
           }
 
+          const cachedVehicles = await this.getCachedVehicles();
+          const targetVeh = cachedVehicles.find((v) => v.id === vehicleId);
+          const effectiveOwner =
+            targetVeh?.isShared && targetVeh.ownerEmail
+              ? targetVeh.ownerEmail.toLowerCase().trim()
+              : userEmail;
+
           const subSnap = await withFirestoreTimeout(
             () =>
-              getDocs(collection(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos')),
+              getDocs(
+                collection(db, 'users', effectiveOwner, 'veiculos', vehicleId, 'abastecimentos')
+              ),
             1500
           );
           let list: Refueling[] = subSnap.docs
@@ -1824,7 +2576,7 @@ export const StorageService = {
                 withFirestoreTimeout(
                   () =>
                     deleteDoc(
-                      doc(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos', d.id)
+                      doc(db, 'users', effectiveOwner, 'veiculos', vehicleId, 'abastecimentos', d.id)
                     ),
                   1500
                 ).catch(() => {});
@@ -1841,7 +2593,7 @@ export const StorageService = {
               withFirestoreTimeout(
                 () =>
                   deleteDoc(
-                    doc(db, 'users', userEmail, 'veiculos', vehicleId, 'abastecimentos', dupId)
+                    doc(db, 'users', effectiveOwner, 'veiculos', vehicleId, 'abastecimentos', dupId)
                   ),
                 1500
               ).catch(() => {});
@@ -1895,11 +2647,13 @@ export const StorageService = {
               if (v.id.startsWith('veh-')) {
                 return this.getCachedRefuelings(v.id);
               }
+              const effectiveOwner =
+                v.isShared && v.ownerEmail ? v.ownerEmail.toLowerCase().trim() : userEmail;
               try {
                 const subSnap = await withFirestoreTimeout(
                   () =>
                     getDocs(
-                      collection(db, 'users', userEmail, 'veiculos', v.id, 'abastecimentos')
+                      collection(db, 'users', effectiveOwner, 'veiculos', v.id, 'abastecimentos')
                     ),
                   1500
                 );
@@ -1913,7 +2667,7 @@ export const StorageService = {
                     withFirestoreTimeout(
                       () =>
                         deleteDoc(
-                          doc(db, 'users', userEmail, 'veiculos', v.id, 'abastecimentos', dupId)
+                          doc(db, 'users', effectiveOwner, 'veiculos', v.id, 'abastecimentos', dupId)
                         ),
                       1500
                     ).catch(() => {});
@@ -1933,7 +2687,7 @@ export const StorageService = {
                   }
                 }
                 const sortedVFull = sortRefuelingsDesc(deduplicateRefuelings(vList).unique);
-                await this.updateVehicleTotalizers(v.id, userEmail, sortedVFull);
+                await this.updateVehicleTotalizers(v.id, effectiveOwner, sortedVFull);
 
                 const cachedFive = limitRefuelingsPerVehicleForCache(sortedVFull, pendingIds);
                 await AsyncStorage.setItem(
@@ -1999,6 +2753,7 @@ export const StorageService = {
 
     const tempId =
       refueling.id || `ref-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const userAttribution = getCurrentUserAttribution();
     const calculatedRefueling: Refueling = {
       ...refueling,
       id: tempId,
@@ -2007,6 +2762,7 @@ export const StorageService = {
       distanceTraveled,
       consumptionKmPerLiter,
       costPerKm,
+      registeredBy: refueling.registeredBy || userAttribution,
     };
 
     // 1. Calcula imediatamente os novos totalizadores do veículo (preservando histórico > 5 itens)
@@ -2109,6 +2865,11 @@ export const StorageService = {
             ? 'GNV'
             : 'Gasolina';
 
+        const effectiveOwner =
+          vehicle?.isShared && vehicle.ownerEmail
+            ? vehicle.ownerEmail.toLowerCase().trim()
+            : userEmail;
+
         const firestoreData: Record<string, unknown> = {
           idVeiculo: vehicle?.id || refueling.vehicleId,
           placa: vehicle?.plate || refueling.plate || '',
@@ -2123,13 +2884,14 @@ export const StorageService = {
           seTanqueCheio: refueling.isFullTank,
           seAditivado: Boolean(refueling.isAdditivated),
           observacao: refueling.notes || refueling.gasStation || '',
+          registradoPor: calculatedRefueling.registeredBy || userAttribution,
         };
 
         const batch = writeBatch(db);
         const subColRef = collection(
           db,
           'users',
-          userEmail,
+          effectiveOwner,
           'veiculos',
           refueling.vehicleId,
           'abastecimentos'
@@ -2139,7 +2901,7 @@ export const StorageService = {
         batch.set(targetDoc, firestoreData, { merge: true });
 
         if (vehicle) {
-          const vehicleDocRef = doc(db, 'users', userEmail, 'veiculos', refueling.vehicleId);
+          const vehicleDocRef = doc(db, 'users', effectiveOwner, 'veiculos', refueling.vehicleId);
           batch.set(
             vehicleDocRef,
             {
@@ -2222,12 +2984,18 @@ export const StorageService = {
     const all = await this.getCachedRefuelings();
     const itemToDelete = all.find((r) => r.id === id);
     const effectiveVehId = vehicleId || itemToDelete?.vehicleId;
+    const cachedVehicles = await this.getCachedVehicles();
+    const targetVeh = cachedVehicles.find((v) => v.id === effectiveVehId);
+    const effectiveOwner =
+      targetVeh?.isShared && targetVeh.ownerEmail
+        ? targetVeh.ownerEmail.toLowerCase().trim()
+        : userEmail;
 
-    if (userEmail && effectiveVehId) {
+    if (effectiveOwner && effectiveVehId) {
       await withFirestoreTimeout(
         () =>
           deleteDoc(
-            doc(db, 'users', userEmail, 'veiculos', effectiveVehId, 'abastecimentos', id)
+            doc(db, 'users', effectiveOwner, 'veiculos', effectiveVehId, 'abastecimentos', id)
           ),
         2000
       ).catch(() => {});
@@ -2235,7 +3003,7 @@ export const StorageService = {
 
       try {
         await withFirestoreTimeout(
-          () => deleteDoc(doc(db, 'users', userEmail, 'medias', id)),
+          () => deleteDoc(doc(db, 'users', effectiveOwner, 'medias', id)),
           1000
         );
       } catch {}
@@ -2258,22 +3026,58 @@ export const StorageService = {
     const userEmail = auth.currentUser?.email;
     if (userEmail) {
       try {
-        const snap = await withFirestoreTimeout(
-          () => getDocs(collection(db, 'users', userEmail, 'manutencoes')),
-          1500
-        );
-        let list: MaintenanceItem[] = snap.docs
-          .map((d) => {
-            const m = mapFirestoreDocToMaintenance(d.id, d.data());
-            if (isDemoRecord(m)) {
-              withFirestoreTimeout(
-                () => deleteDoc(doc(db, 'users', userEmail, 'manutencoes', d.id)),
-                1500
-              ).catch(() => {});
+        const cachedVehicles = await this.getCachedVehicles();
+        const targetVeh = vehicleId ? cachedVehicles.find((v) => v.id === vehicleId) : undefined;
+        const sharedVehicles = cachedVehicles.filter((v) => v.isShared && v.ownerEmail);
+
+        let list: MaintenanceItem[] = [];
+
+        if (targetVeh?.isShared && targetVeh.ownerEmail) {
+          const ownerKey = targetVeh.ownerEmail.toLowerCase().trim();
+          const snap = await withFirestoreTimeout(
+            () => getDocs(collection(db, 'users', ownerKey, 'manutencoes')),
+            3000
+          );
+          list = snap.docs
+            .map((d) => mapFirestoreDocToMaintenance(d.id, d.data()))
+            .filter((m) => m.vehicleId === vehicleId && !isDemoRecord(m));
+        } else {
+          const snap = await withFirestoreTimeout(
+            () => getDocs(collection(db, 'users', userEmail, 'manutencoes')),
+            3000
+          );
+          list = snap.docs
+            .map((d) => {
+              const m = mapFirestoreDocToMaintenance(d.id, d.data());
+              if (isDemoRecord(m)) {
+                withFirestoreTimeout(
+                  () => deleteDoc(doc(db, 'users', userEmail, 'manutencoes', d.id)),
+                  1500
+                ).catch(() => {});
+              }
+              return m;
+            })
+            .filter((m) => !isDemoRecord(m));
+
+          if (!vehicleId && sharedVehicles.length > 0) {
+            for (const sv of sharedVehicles) {
+              if (!sv.ownerEmail) continue;
+              try {
+                const sSnap = await withFirestoreTimeout(
+                  () =>
+                    getDocs(
+                      collection(db, 'users', sv.ownerEmail!.toLowerCase().trim(), 'manutencoes')
+                    ),
+                  2000
+                );
+                const sList = sSnap.docs
+                  .map((d) => mapFirestoreDocToMaintenance(d.id, d.data()))
+                  .filter((m) => m.vehicleId === sv.id && !isDemoRecord(m));
+                list.push(...sList);
+              } catch {}
             }
-            return m;
-          })
-          .filter((m) => !isDemoRecord(m));
+          }
+        }
 
         // Limpa duplicatas no Firestore se existirem
         const { unique: dedupedFsMnts, duplicateIds: dupFsMntIds } = deduplicateMaintenances(list);
@@ -2297,13 +3101,25 @@ export const StorageService = {
 
         for (const pa of pendingAdds) {
           const paFp = getMaintenanceFingerprint(pa);
-          const alreadyInList = list.some(
+          const existingIdx = list.findIndex(
             (m) => m.id === pa.id || getMaintenanceFingerprint(m) === paFp
           );
-          if (!alreadyInList) {
+          if (existingIdx === -1) {
             list.unshift(pa);
           } else {
-            SyncService.removeByEntityId(pa.id).catch(() => {});
+            const existing = list[existingIdx];
+            list[existingIdx] = {
+              ...existing,
+              ...pa,
+              id: existing.id || pa.id,
+              receiptUrl: pa.receiptUrl || existing.receiptUrl,
+              notes: pa.notes || existing.notes,
+            };
+            const fsHasReceipt = Boolean(existing.receiptUrl);
+            const paHasReceipt = Boolean(pa.receiptUrl);
+            if (!paHasReceipt || fsHasReceipt) {
+              SyncService.removeByEntityId(pa.id).catch(() => {});
+            }
           }
         }
 
@@ -2345,18 +3161,28 @@ export const StorageService = {
 
     const tempId =
       maintenance.id || `mnt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const userAttribution = getCurrentUserAttribution();
     const calculatedMnt: MaintenanceItem = {
       ...maintenance,
       id: tempId,
+      registeredBy: maintenance.registeredBy || userAttribution,
     };
 
     // 1. Atualiza imediatamente o veículo e seus totalizadores (funciona 100% offline e online)
     const vehUpdates: Record<string, unknown> = {};
     if (vehicle) {
+      const isExisting = existingMaintenances.some((m) => m.id === calculatedMnt.id);
       const prevMntCount = vehicle.qtdManutencoes ?? existingMaintenances.length;
       const hadMoreThanCached = prevMntCount > existingMaintenances.length;
 
-      if (hadMoreThanCached) {
+      if (isExisting) {
+        const oldItem = existingMaintenances.find((m) => m.id === calculatedMnt.id);
+        const oldCost = oldItem ? Number(oldItem.cost || 0) : 0;
+        const diff = Number(maintenance.cost || 0) - oldCost;
+        vehicle.gastoManutencao = Number(
+          Math.max(0, (vehicle.gastoManutencao || 0) + diff).toFixed(2)
+        );
+      } else if (hadMoreThanCached) {
         vehicle.gastoManutencao = Number(
           ((vehicle.gastoManutencao || 0) + Number(maintenance.cost || 0)).toFixed(2)
         );
@@ -2383,14 +3209,17 @@ export const StorageService = {
 
       if (maintenance.category === 'oleo_filtro') {
         vehicle.ultimaTrocaOleoKm = maintenance.odometer;
-        vehicle.proxTrocaOleoKm = maintenance.odometer + (vehicle.trocaOleoKm || 10000);
+        const oilInterval = vehicle.trocaOleoKm || (vehicle.vehicleType === 'moto' ? 3000 : 10000);
+        vehicle.proxTrocaOleoKm = maintenance.nextDueOdometer || (maintenance.odometer + oilInterval);
         vehUpdates.ultimaTrocaOleoKm = vehicle.ultimaTrocaOleoKm;
         vehUpdates.proxTrocaOleoKm = vehicle.proxTrocaOleoKm;
       } else if (maintenance.category === 'revisao_geral') {
         vehicle.ultimaRevisaoKm = maintenance.odometer;
-        vehicle.proxRevKm = maintenance.odometer + (vehicle.revisaoKm || 10000);
+        const revInterval = vehicle.revisaoKm || (vehicle.vehicleType === 'moto' ? 6000 : 10000);
+        const oilInterval = vehicle.trocaOleoKm || (vehicle.vehicleType === 'moto' ? 3000 : 10000);
+        vehicle.proxRevKm = maintenance.nextDueOdometer || (maintenance.odometer + revInterval);
         vehicle.ultimaTrocaOleoKm = maintenance.odometer;
-        vehicle.proxTrocaOleoKm = maintenance.odometer + (vehicle.trocaOleoKm || 10000);
+        vehicle.proxTrocaOleoKm = maintenance.odometer + oilInterval;
         vehUpdates.ultimaRevisaoKm = vehicle.ultimaRevisaoKm;
         vehUpdates.proxRevKm = vehicle.proxRevKm;
         vehUpdates.ultimaTrocaOleoKm = vehicle.ultimaTrocaOleoKm;
@@ -2454,6 +3283,11 @@ export const StorageService = {
           outros: 'OUTROS',
         };
 
+        const effectiveOwner =
+          vehicle?.isShared && vehicle.ownerEmail
+            ? vehicle.ownerEmail.toLowerCase().trim()
+            : userEmail;
+
         const firestoreData: Record<string, unknown> = {
           veiculoId: maintenance.vehicleId,
           veiculo: vehicle?.plate || '',
@@ -2464,18 +3298,25 @@ export const StorageService = {
           ladoManutencao: maintenance.side || '',
           descricaoManutencao: maintenance.description || maintenance.workshop || '',
           valorManutencao: maintenance.cost,
+          observacoes: maintenance.notes || '',
+          receiptUrl: maintenance.receiptUrl || '',
+          registradoPor: calculatedMnt.registeredBy || userAttribution,
         };
 
         const batch = writeBatch(db);
-        const mntDocRef = doc(collection(db, 'users', userEmail, 'manutencoes'), calculatedMnt.id);
+        const mntDocRef = doc(
+          collection(db, 'users', effectiveOwner, 'manutencoes'),
+          calculatedMnt.id
+        );
         batch.set(mntDocRef, firestoreData, { merge: true });
 
         if (vehicle && !vehicle.id.startsWith('veh-')) {
-          const vehicleDocRef = doc(db, 'users', userEmail, 'veiculos', vehicle.id);
+          const vehicleDocRef = doc(db, 'users', effectiveOwner, 'veiculos', vehicle.id);
           batch.set(vehicleDocRef, vehUpdates, { merge: true });
         }
 
-        await withFirestoreTimeout(() => batch.commit(), 1500);
+        const commitTimeout = calculatedMnt.receiptUrl ? 7000 : 3000;
+        await withFirestoreTimeout(() => batch.commit(), commitTimeout);
         savedOnline = true;
         await SyncService.removeByEntityId(tempId);
         await SyncService.removeByEntityId(calculatedMnt.id);
@@ -2528,6 +3369,10 @@ export const StorageService = {
     return calculatedMnt;
   },
 
+  async updateMaintenance(maintenance: MaintenanceItem): Promise<MaintenanceItem> {
+    return this.addMaintenance(maintenance);
+  },
+
   async deleteMaintenance(id: string): Promise<void> {
     const userEmail = auth.currentUser?.email;
     const online = await checkOnlineStatus(true);
@@ -2540,10 +3385,16 @@ export const StorageService = {
     const all = await this.getCachedMaintenances();
     const itemToDelete = all.find((m) => m.id === id);
     const vehicleId = itemToDelete?.vehicleId;
+    const cachedVehicles = await this.getCachedVehicles();
+    const targetVeh = cachedVehicles.find((v) => v.id === vehicleId);
+    const effectiveOwner =
+      targetVeh?.isShared && targetVeh.ownerEmail
+        ? targetVeh.ownerEmail.toLowerCase().trim()
+        : userEmail;
 
-    if (userEmail) {
+    if (effectiveOwner) {
       await withFirestoreTimeout(
-        () => deleteDoc(doc(db, 'users', userEmail, 'manutencoes', id)),
+        () => deleteDoc(doc(db, 'users', effectiveOwner, 'manutencoes', id)),
         2000
       ).catch(() => {});
       await SyncService.removeByEntityId(id);
@@ -2637,6 +3488,11 @@ export const StorageService = {
     const isOnline = await checkOnlineStatus();
     if (isOnline && userEmail && !vehicle.id.startsWith('veh-')) {
       try {
+        const currentList = await this.getCachedVehicles();
+        if (!currentList.some((v) => v.id === vehicle.id)) {
+          return vehicle;
+        }
+
         await withFirestoreTimeout(
           () =>
             setDoc(doc(db, 'users', userEmail, 'veiculos', vehicle.id), firestoreUpdates, {

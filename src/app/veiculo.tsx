@@ -79,6 +79,184 @@ export default function VehicleDetailsScreen() {
     }
   };
 
+  // Estados de Compartilhamento do Veículo
+  const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [targetShareEmail, setTargetShareEmail] = useState('');
+  const [sharing, setSharing] = useState(false);
+  const shareScrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+
+  const handleOpenShare = () => {
+    if (!vehicle) return;
+    setTargetShareEmail('');
+    setShareModalVisible(true);
+  };
+
+  const handleAddShareMember = async () => {
+    if (!vehicle || sharing) return;
+    const emailToShare = targetShareEmail.trim().toLowerCase();
+    if (!emailToShare || !emailToShare.includes('@') || !emailToShare.includes('.')) {
+      Alert.alert('E-mail Inválido', 'Insira um e-mail válido para compartilhar o veículo.');
+      return;
+    }
+
+    const online = await StorageService.checkOnlineStatus(true);
+    if (!online) {
+      Alert.alert(
+        'Modo Offline',
+        'Não é possível compartilhar veículos enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+      return;
+    }
+
+    setSharing(true);
+    try {
+      const res = await StorageService.shareVehicle(vehicle.id, emailToShare);
+      setTargetShareEmail('');
+      setVehicle((prev) => (prev ? { ...prev, sharedWith: res.sharedWith } : null));
+      Alert.alert(
+        'Compartilhamento Realizado! 🎉',
+        `O veículo "${vehicle.name}" agora está compartilhado com ${emailToShare}. O usuário poderá acompanhar e registrar abastecimentos e manutenções.`
+      );
+    } catch (err: any) {
+      Alert.alert('Erro ao Compartilhar', err?.message || 'Falha ao compartilhar o veículo.');
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const handleRemoveShareMember = (emailToRemove: string) => {
+    if (!vehicle || sharing) return;
+    Alert.alert(
+      'Revogar Acesso',
+      `Deseja realmente revogar o compartilhamento deste veículo com ${emailToRemove}?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Revogar',
+          style: 'destructive',
+          onPress: async () => {
+            setSharing(true);
+            try {
+              const res = await StorageService.unshareVehicle(vehicle.id, emailToRemove);
+              setVehicle((prev) => (prev ? { ...prev, sharedWith: res.sharedWith } : null));
+              Alert.alert('Acesso Revogado', `O acesso de ${emailToRemove} foi revogado com sucesso.`);
+            } catch (err: any) {
+              Alert.alert('Erro ao Revogar', err?.message || 'Falha ao revogar compartilhamento.');
+            } finally {
+              setSharing(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleLeaveShared = () => {
+    if (!vehicle) return;
+    Alert.alert(
+      'Sair do Compartilhamento',
+      `Deseja sair do compartilhamento do veículo "${vehicle.name}" (${vehicle.plate})? Ele deixará de aparecer na sua garagem, mas os dados não serão perdidos para o proprietário (${vehicle.ownerEmail || 'proprietário'}).`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Sair',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await StorageService.leaveSharedVehicle(vehicle.id);
+              Alert.alert('Compartilhamento Encerrado', 'Você saiu do compartilhamento deste veículo com sucesso.');
+              router.back();
+            } catch (err: any) {
+              Alert.alert('Erro', err?.message || 'Falha ao sair do compartilhamento.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Estados de Transferência do Veículo
+  const [transferModalVisible, setTransferModalVisible] = useState(false);
+  const [targetEmail, setTargetEmail] = useState('');
+  const [transferring, setTransferring] = useState(false);
+  const transferScrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+
+  const handleOpenTransfer = () => {
+    if (!vehicle) return;
+    setTargetEmail('');
+    setTransferModalVisible(true);
+  };
+
+  const handleConfirmTransfer = async () => {
+    if (!vehicle || transferring) return;
+
+    const emailToTransfer = targetEmail.trim().toLowerCase();
+    if (!emailToTransfer || !emailToTransfer.includes('@') || !emailToTransfer.includes('.')) {
+      Alert.alert('E-mail Inválido', 'Por favor, insira um e-mail válido para o novo proprietário.');
+      return;
+    }
+
+    const online = await StorageService.checkOnlineStatus(true);
+    if (!online) {
+      Alert.alert(
+        'Modo Offline',
+        'Não é possível transferir veículos enquanto estiver offline. Conecte-se à internet e tente novamente.'
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Confirmar Transferência',
+      `Tem certeza de que deseja transferir o veículo "${vehicle.name}" (${vehicle.plate}) e todos os dados associados (${refuelings.length} abastecimento(s) e ${maintenances.length} manutenção(ões)) para:\n\n${emailToTransfer}\n\n⚠️ Esta ação é definitiva e removerá o veículo da sua conta.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Sim, Transferir',
+          style: 'destructive',
+          onPress: async () => {
+            setTransferring(true);
+            try {
+              const result = await StorageService.transferVehicle(vehicle.id, emailToTransfer);
+              setTransferModalVisible(false);
+              Alert.alert(
+                'Transferência Concluída! 🎉',
+                `O veículo "${vehicle.name}" (${vehicle.plate}) com ${result.refuelingsCount} abastecimento(s) e ${result.maintenancesCount} manutenção(ões) foi transferido com sucesso para ${emailToTransfer}!`,
+                [
+                  {
+                    text: 'OK',
+                    onPress: () => router.back(),
+                  },
+                ]
+              );
+            } catch (err: any) {
+              Alert.alert(
+                'Erro na Transferência',
+                err?.message || 'Não foi possível transferir o veículo. Tente novamente mais tarde.'
+              );
+            } finally {
+              setTransferring(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const formatDisplayDate = (d?: string): string => {
+    if (!d) return '--';
+    try {
+      const [datePart] = d.split('T');
+      const parts = datePart.split('-');
+      if (parts.length === 3) {
+        const [year, month, day] = parts;
+        return `${day}/${month}/${year}`;
+      }
+      return d;
+    } catch {
+      return d;
+    }
+  };
+
   // Estados de Edição do Veículo
   const [modalVisible, setModalVisible] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -270,6 +448,11 @@ export default function VehicleDetailsScreen() {
   const handleDelete = async () => {
     if (!vehicle) return;
 
+    if (vehicle.isShared) {
+      handleLeaveShared();
+      return;
+    }
+
     if (vehicles.length <= 1) {
       Alert.alert('Atenção', 'Você precisa ter pelo menos um veículo cadastrado na garagem.');
       return;
@@ -395,22 +578,78 @@ export default function VehicleDetailsScreen() {
             )}
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.headerEditBtn, { borderColor: theme.blue, backgroundColor: theme.blueLight }]}
-            onPress={handleOpenEdit}
-            activeOpacity={0.7}
-            accessibilityLabel="Editar Veículo"
-          >
-            <Ionicons name="create-outline" size={18} color={theme.blue} />
-          </TouchableOpacity>
+          {/* TRANSFERIR: APENAS PROPRIETÁRIO */}
+          {!vehicle.isShared && (
+            <TouchableOpacity
+              style={[
+                styles.headerTransferBtn,
+                {
+                  borderColor: '#8B5CF6',
+                  backgroundColor: isDark ? 'rgba(139, 92, 246, 0.15)' : 'rgba(139, 92, 246, 0.1)',
+                },
+              ]}
+              onPress={handleOpenTransfer}
+              activeOpacity={0.7}
+              disabled={transferring}
+              accessibilityLabel="Transferir Veículo"
+            >
+              <Ionicons name="swap-horizontal" size={18} color="#8B5CF6" />
+            </TouchableOpacity>
+          )}
 
+          {/* COMPARTILHAR: APENAS PROPRIETÁRIO */}
+          {!vehicle.isShared && (
+            <TouchableOpacity
+              style={[
+                styles.headerShareBtn,
+                {
+                  borderColor: '#0284C7',
+                  backgroundColor: isDark ? 'rgba(2, 132, 199, 0.15)' : 'rgba(2, 132, 199, 0.1)',
+                },
+              ]}
+              onPress={handleOpenShare}
+              activeOpacity={0.7}
+              disabled={sharing}
+              accessibilityLabel="Compartilhar Veículo"
+            >
+              <Ionicons name="share-social-outline" size={18} color="#0284C7" />
+            </TouchableOpacity>
+          )}
+
+          {/* EDITAR DADOS CADASTRAIS: APENAS PROPRIETÁRIO */}
+          {!vehicle.isShared && (
+            <TouchableOpacity
+              style={[styles.headerEditBtn, { borderColor: theme.blue, backgroundColor: theme.blueLight }]}
+              onPress={handleOpenEdit}
+              activeOpacity={0.7}
+              accessibilityLabel="Editar Veículo"
+            >
+              <Ionicons name="create-outline" size={18} color={theme.blue} />
+            </TouchableOpacity>
+          )}
+
+          {/* EXCLUSÃO / SAIR DO COMPARTILHAMENTO */}
           <TouchableOpacity
-            style={[styles.headerDeleteBtn, { borderColor: theme.red, backgroundColor: theme.redLight }]}
-            onPress={handleDelete}
+            style={[
+              styles.headerDeleteBtn,
+              {
+                borderColor: vehicle.isShared ? '#F59E0B' : theme.red,
+                backgroundColor: vehicle.isShared
+                  ? isDark
+                    ? 'rgba(245, 158, 11, 0.15)'
+                    : '#FEF3C7'
+                  : theme.redLight,
+              },
+            ]}
+            onPress={vehicle.isShared ? handleLeaveShared : handleDelete}
             activeOpacity={0.7}
-            accessibilityLabel="Excluir Veículo"
+            accessibilityLabel={vehicle.isShared ? 'Sair do Compartilhamento' : 'Excluir Veículo'}
           >
-            <Ionicons name="trash-outline" size={18} color={theme.red} />
+            <Ionicons
+              name={vehicle.isShared ? 'exit-outline' : 'trash-outline'}
+              size={18}
+              color={vehicle.isShared ? '#D97706' : theme.red}
+            />
           </TouchableOpacity>
         </View>
       </View>
@@ -463,12 +702,41 @@ export default function VehicleDetailsScreen() {
                     {isMoto ? 'Moto' : 'Carro'} • {vehicle.year}
                   </Text>
                 </View>
+
+                {vehicle.isShared && (
+                  <View
+                    style={[
+                      styles.sharedHeroBadge,
+                      {
+                        backgroundColor: isDark ? 'rgba(59, 130, 246, 0.15)' : '#EFF6FF',
+                        borderColor: isDark ? 'rgba(59, 130, 246, 0.3)' : '#BFDBFE',
+                      },
+                    ]}
+                  >
+                    <Ionicons name="people" size={11} color="#3B82F6" />
+                    <Text style={styles.sharedHeroBadgeText}>Compartilhado</Text>
+                  </View>
+                )}
               </View>
             </View>
           </View>
 
-          {/* STATUS: PREFERIDO */}
-          {isPreferred && (
+          {/* STATUS: COMPARTILHADO OU PREFERIDO */}
+          {vehicle.isShared ? (
+            <View style={[styles.statusRow, { borderTopColor: theme.cardBorder }]}>
+              <View
+                style={[
+                  styles.preferredTag,
+                  { backgroundColor: isDark ? 'rgba(59, 130, 246, 0.15)' : '#EFF6FF' },
+                ]}
+              >
+                <Ionicons name="people" size={13} color="#3B82F6" />
+                <Text style={[styles.preferredTagText, { color: '#3B82F6' }]}>
+                  Compartilhado por {vehicle.ownerEmail || 'outro usuário'}
+                </Text>
+              </View>
+            </View>
+          ) : isPreferred ? (
             <View style={[styles.statusRow, { borderTopColor: theme.cardBorder }]}>
               <View style={[styles.preferredTag, { backgroundColor: theme.amberLight }]}>
                 <Ionicons name="star" size={13} color={theme.amber} />
@@ -477,7 +745,7 @@ export default function VehicleDetailsScreen() {
                 </Text>
               </View>
             </View>
-          )}
+          ) : null}
         </View>
 
         {/* SEÇÃO 1: TOTALIZADORES E DESEMPENHO */}
@@ -712,6 +980,85 @@ export default function VehicleDetailsScreen() {
             </Text>
           </View>
 
+          {/* DATA DE CADASTRO */}
+          <View style={[styles.rowDivider, { backgroundColor: theme.cardBorder }]} />
+          <View style={styles.detailRow}>
+            <View style={styles.detailLabelGroup}>
+              <Ionicons name="calendar-clear-outline" size={18} color={theme.textMuted} />
+              <Text style={[styles.detailItemLabel, { color: theme.textMuted }]}>Data de Cadastro</Text>
+            </View>
+            <Text style={[styles.detailItemValue, { color: theme.text }]}>
+              {formatDisplayDate(vehicle.createdAt)}
+            </Text>
+          </View>
+
+          {/* DATA DE TRANSFERÊNCIA (CASO TENHA SIDO TRANSFERIDO DE OUTRO USUÁRIO) */}
+          {vehicle.transferredAt ? (
+            <>
+              <View style={[styles.rowDivider, { backgroundColor: theme.cardBorder }]} />
+              <View style={styles.detailRow}>
+                <View style={styles.detailLabelGroup}>
+                  <Ionicons name="swap-horizontal" size={18} color="#8B5CF6" />
+                  <Text style={[styles.detailItemLabel, { color: '#8B5CF6', fontWeight: '700' }]}>
+                    Data de Transferência
+                  </Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[styles.detailItemValue, { color: '#8B5CF6', fontWeight: '700' }]}>
+                    {formatDisplayDate(vehicle.transferredAt)}
+                  </Text>
+                  {vehicle.transferredFrom ? (
+                    <Text style={{ fontSize: 11, color: theme.textMuted, marginTop: 2 }}>
+                      De: {vehicle.transferredFrom}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            </>
+          ) : null}
+
+          {/* STATUS DE COMPARTILHAMENTO */}
+          {vehicle.isShared && vehicle.ownerEmail ? (
+            <>
+              <View style={[styles.rowDivider, { backgroundColor: theme.cardBorder }]} />
+              <View style={styles.detailRow}>
+                <View style={styles.detailLabelGroup}>
+                  <Ionicons name="person-outline" size={18} color="#3B82F6" />
+                  <Text style={[styles.detailItemLabel, { color: '#3B82F6', fontWeight: '700' }]}>
+                    Proprietário (Origem)
+                  </Text>
+                </View>
+                <Text style={[styles.detailItemValue, { color: theme.text, fontWeight: '600' }]}>
+                  {vehicle.ownerEmail}
+                </Text>
+              </View>
+            </>
+          ) : null}
+
+          {!vehicle.isShared && vehicle.sharedWith && vehicle.sharedWith.length > 0 ? (
+            <>
+              <View style={[styles.rowDivider, { backgroundColor: theme.cardBorder }]} />
+              <TouchableOpacity
+                style={styles.detailRow}
+                onPress={handleOpenShare}
+                activeOpacity={0.7}
+              >
+                <View style={styles.detailLabelGroup}>
+                  <Ionicons name="people-outline" size={18} color="#0284C7" />
+                  <Text style={[styles.detailItemLabel, { color: '#0284C7', fontWeight: '700' }]}>
+                    Compartilhado Com
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={[styles.detailItemValue, { color: '#0284C7', fontWeight: '700' }]}>
+                    {vehicle.sharedWith.length} usuário(s)
+                  </Text>
+                  <Ionicons name="chevron-forward" size={14} color="#0284C7" />
+                </View>
+              </TouchableOpacity>
+            </>
+          ) : null}
+
           {/* MANUTENÇÃO PERIÓDICA DO BANCO (SE HOUVER) */}
           {vehicle.cadManPeriodica && (
             <>
@@ -749,7 +1096,7 @@ export default function VehicleDetailsScreen() {
           )}
         </View>
 
-        {/* BOTÕES DE AÇÃO: RELATÓRIO PDF, EDITAR E EXCLUIR */}
+        {/* BOTÕES DE AÇÃO: RELATÓRIO PDF, COMPARTILHAR, TRANSFERIR, EDITAR E EXCLUIR */}
         <View style={styles.actionsContainer}>
           <TouchableOpacity
             style={[
@@ -773,16 +1120,79 @@ export default function VehicleDetailsScreen() {
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.primaryActionBtn, { backgroundColor: theme.accent }]}
-            onPress={handleOpenEdit}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="create-outline" size={20} color="#FFFFFF" />
-            <Text style={styles.primaryActionBtnText}>Editar Informações do Veículo</Text>
-          </TouchableOpacity>
+          {/* COMPARTILHAMENTO: APENAS PROPRIETÁRIO */}
+          {!vehicle.isShared && (
+            <TouchableOpacity
+              style={[
+                styles.shareActionBtn,
+                {
+                  borderColor: '#0284C7',
+                  backgroundColor: isDark ? 'rgba(2, 132, 199, 0.15)' : 'rgba(2, 132, 199, 0.1)',
+                },
+              ]}
+              onPress={handleOpenShare}
+              activeOpacity={0.8}
+              disabled={sharing}
+            >
+              <Ionicons name="people-outline" size={20} color="#0284C7" />
+              <Text style={[styles.shareActionBtnText, { color: '#0284C7' }]}>
+                Compartilhar Veículo
+              </Text>
+            </TouchableOpacity>
+          )}
 
-          {vehicles.length > 1 && (
+          {/* TRANSFERÊNCIA: APENAS PROPRIETÁRIO */}
+          {!vehicle.isShared && (
+            <TouchableOpacity
+              style={[
+                styles.transferActionBtn,
+                {
+                  borderColor: '#8B5CF6',
+                  backgroundColor: isDark ? 'rgba(139, 92, 246, 0.15)' : 'rgba(139, 92, 246, 0.1)',
+                },
+              ]}
+              onPress={handleOpenTransfer}
+              activeOpacity={0.8}
+              disabled={transferring}
+            >
+              <Ionicons name="swap-horizontal" size={20} color="#8B5CF6" />
+              <Text style={[styles.transferActionBtnText, { color: '#8B5CF6' }]}>
+                Transferir Veículo para Outro Usuário
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {/* EDIÇÃO CADASTRAL: APENAS PROPRIETÁRIO */}
+          {!vehicle.isShared && (
+            <TouchableOpacity
+              style={[styles.primaryActionBtn, { backgroundColor: theme.accent }]}
+              onPress={handleOpenEdit}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="create-outline" size={20} color="#FFFFFF" />
+              <Text style={styles.primaryActionBtnText}>Editar Informações do Veículo</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* EXCLUSÃO (PROPRIETÁRIO) OU SAIR DO COMPARTILHAMENTO (DESTINATÁRIO) */}
+          {vehicle.isShared ? (
+            <TouchableOpacity
+              style={[
+                styles.deleteActionBtn,
+                {
+                  borderColor: '#F59E0B',
+                  backgroundColor: isDark ? 'rgba(245, 158, 11, 0.15)' : '#FEF3C7',
+                },
+              ]}
+              onPress={handleLeaveShared}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="exit-outline" size={18} color="#D97706" />
+              <Text style={[styles.deleteActionBtnText, { color: isDark ? '#FBBF24' : '#B45309' }]}>
+                Sair do Compartilhamento deste Veículo
+              </Text>
+            </TouchableOpacity>
+          ) : vehicles.length > 1 ? (
             <TouchableOpacity
               style={[styles.deleteActionBtn, { borderColor: theme.red, backgroundColor: theme.redLight }]}
               onPress={handleDelete}
@@ -791,7 +1201,7 @@ export default function VehicleDetailsScreen() {
               <Ionicons name="trash-outline" size={18} color={theme.red} />
               <Text style={[styles.deleteActionBtnText, { color: theme.red }]}>Excluir Veículo da Garagem</Text>
             </TouchableOpacity>
-          )}
+          ) : null}
         </View>
       </ScrollView>
 
@@ -1169,6 +1579,445 @@ export default function VehicleDetailsScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* MODAL: COMPARTILHAMENTO DE VEÍCULO */}
+      <Modal
+        visible={shareModalVisible}
+        transparent
+        animationType="slide"
+        statusBarTranslucent={true}
+        onRequestClose={() => {
+          if (!sharing) setShareModalVisible(false);
+        }}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              if (keyboardVisible) {
+                Keyboard.dismiss();
+              } else if (!sharing) {
+                setShareModalVisible(false);
+              }
+            }}
+          />
+          <View
+            style={[
+              styles.transferModalContainer,
+              {
+                backgroundColor: theme.card,
+                borderColor: theme.cardBorder,
+                maxHeight: keyboardVisible ? '92%' : '88%',
+              },
+            ]}
+          >
+            {/* Header do Modal */}
+            <View style={[styles.transferModalHeader, { borderBottomColor: theme.cardBorder }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View
+                  style={[
+                    styles.transferModalIconBox,
+                    { backgroundColor: isDark ? 'rgba(2, 132, 199, 0.2)' : '#E0F2FE' },
+                  ]}
+                >
+                  <Ionicons name="people" size={20} color="#0284C7" />
+                </View>
+                <View>
+                  <Text style={[styles.transferModalTitle, { color: theme.text }]}>
+                    Compartilhar Veículo
+                  </Text>
+                  <Text style={{ fontSize: 11, color: theme.textMuted }}>
+                    Acesso compartilhado com outros usuários
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => !sharing && setShareModalVisible(false)}
+                disabled={sharing}
+                style={styles.transferModalCloseBtn}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close" size={22} color={theme.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              ref={shareScrollRef}
+              style={{ maxHeight: keyboardVisible ? 240 : 440 }}
+              contentContainerStyle={{
+                padding: 18,
+                paddingBottom: keyboardVisible ? 24 : 18,
+                gap: 14,
+              }}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets={true}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Resumo do Veículo */}
+              <View
+                style={[
+                  styles.transferVehBanner,
+                  { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                ]}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.transferVehName, { color: theme.text }]}>
+                    {vehicle.name}
+                  </Text>
+                  <Text style={[styles.transferVehSub, { color: theme.textMuted }]}>
+                    Placa: {vehicle.plate} • {displayBrandModel}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Box de Informações */}
+              <View
+                style={[
+                  styles.transferAlertBox,
+                  {
+                    backgroundColor: isDark ? 'rgba(2, 132, 199, 0.12)' : '#F0F9FF',
+                    borderColor: isDark ? 'rgba(2, 132, 199, 0.3)' : '#BAE6FD',
+                  },
+                ]}
+              >
+                <Ionicons name="information-circle-outline" size={20} color="#0284C7" style={{ marginTop: 2 }} />
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={[styles.transferAlertTitle, { color: isDark ? '#38BDF8' : '#0369A1' }]}>
+                    Acesso Compartilhado Completo
+                  </Text>
+                  <Text style={[styles.transferAlertText, { color: isDark ? '#BAE6FD' : '#075985' }]}>
+                    Os usuários adicionados poderão acompanhar todo o histórico e registrar novos abastecimentos e manutenções do veículo. Apenas você (proprietário) pode alterar o cadastro ou transferir o veículo.
+                  </Text>
+                </View>
+              </View>
+
+              {/* Campo para adicionar novo usuário */}
+              <View>
+                <Text style={[styles.transferInputLabel, { color: theme.text }]}>
+                  Adicionar usuário pelo e-mail
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+                  <TextInput
+                    style={[
+                      styles.transferInput,
+                      {
+                        flex: 1,
+                        backgroundColor: theme.bg,
+                        borderColor: theme.cardBorder,
+                        color: theme.text,
+                      },
+                    ]}
+                    placeholder="usuario@email.com"
+                    placeholderTextColor={theme.textMuted}
+                    value={targetShareEmail}
+                    onChangeText={setTargetShareEmail}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!sharing}
+                  />
+                  <TouchableOpacity
+                    style={[
+                      styles.shareAddBtn,
+                      {
+                        backgroundColor: '#0284C7',
+                        opacity: sharing || !targetShareEmail.trim() ? 0.6 : 1,
+                      },
+                    ]}
+                    onPress={handleAddShareMember}
+                    disabled={sharing || !targetShareEmail.trim()}
+                  >
+                    {sharing ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <>
+                        <Ionicons name="person-add" size={16} color="#FFFFFF" />
+                        <Text style={styles.shareAddBtnText}>Adicionar</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+                <Text style={[styles.transferInputHelp, { color: theme.textMuted }]}>
+                  O usuário precisa possuir cadastro no app ContaGiro com este e-mail.
+                </Text>
+              </View>
+
+              {/* Lista de Membros Atuais */}
+              <View style={{ marginTop: 4 }}>
+                <Text style={[styles.transferInputLabel, { color: theme.text, marginBottom: 8 }]}>
+                  Usuários com acesso ({vehicle.sharedWith?.length || 0})
+                </Text>
+                {vehicle.sharedWith && vehicle.sharedWith.length > 0 ? (
+                  <View style={{ gap: 8 }}>
+                    {vehicle.sharedWith.map((memberEmail) => (
+                      <View
+                        key={memberEmail}
+                        style={[
+                          styles.sharedMemberCard,
+                          { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                        ]}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                          <View
+                            style={[
+                              styles.sharedMemberAvatar,
+                              { backgroundColor: isDark ? 'rgba(2, 132, 199, 0.2)' : '#E0F2FE' },
+                            ]}
+                          >
+                            <Ionicons name="person" size={14} color="#0284C7" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.sharedMemberEmail, { color: theme.text }]} numberOfLines={1}>
+                              {memberEmail}
+                            </Text>
+                            <Text style={{ fontSize: 11, color: theme.textMuted }}>
+                              Pode abastecer e registrar manutenções
+                            </Text>
+                          </View>
+                        </View>
+                        <TouchableOpacity
+                          style={[
+                            styles.removeMemberBtn,
+                            { backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : '#FEE2E2' },
+                          ]}
+                          onPress={() => handleRemoveShareMember(memberEmail)}
+                          disabled={sharing}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View
+                    style={[
+                      styles.emptySharedBox,
+                      { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                    ]}
+                  >
+                    <Ionicons name="people-outline" size={24} color={theme.textMuted} />
+                    <Text style={[styles.emptySharedText, { color: theme.textMuted }]}>
+                      Nenhum usuário adicionado ainda. Insira o e-mail acima para compartilhar.
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+
+            {/* Rodapé com botão Concluir */}
+            <View
+              style={[
+                styles.transferModalFooter,
+                {
+                  borderTopColor: theme.cardBorder,
+                  paddingBottom: keyboardVisible ? 12 : Math.max(insets.bottom, 16),
+                },
+              ]}
+            >
+              <TouchableOpacity
+                style={[styles.closeShareDetailBtn, { backgroundColor: '#0284C7' }]}
+                onPress={() => setShareModalVisible(false)}
+                disabled={sharing}
+              >
+                <Text style={styles.closeShareDetailBtnText}>Concluir</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* MODAL: TRANSFERÊNCIA DE VEÍCULO */}
+      <Modal
+        visible={transferModalVisible}
+        transparent
+        animationType="slide"
+        statusBarTranslucent={true}
+        onRequestClose={() => {
+          if (!transferring) setTransferModalVisible(false);
+        }}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              if (keyboardVisible) {
+                Keyboard.dismiss();
+              } else if (!transferring) {
+                setTransferModalVisible(false);
+              }
+            }}
+          />
+          <View
+            style={[
+              styles.transferModalContainer,
+              {
+                backgroundColor: theme.card,
+                borderColor: theme.cardBorder,
+                maxHeight: keyboardVisible ? '92%' : '88%',
+              },
+            ]}
+          >
+            {/* Header do Modal */}
+            <View style={[styles.transferModalHeader, { borderBottomColor: theme.cardBorder }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View
+                  style={[
+                    styles.transferModalIconBox,
+                    { backgroundColor: isDark ? 'rgba(139, 92, 246, 0.2)' : '#EDE9FE' },
+                  ]}
+                >
+                  <Ionicons name="swap-horizontal" size={20} color="#8B5CF6" />
+                </View>
+                <View>
+                  <Text style={[styles.transferModalTitle, { color: theme.text }]}>
+                    Transferir Veículo
+                  </Text>
+                  <Text style={{ fontSize: 11, color: theme.textMuted }}>
+                    Mudança de titularidade do veículo
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => !transferring && setTransferModalVisible(false)}
+                disabled={transferring}
+                style={styles.transferModalCloseBtn}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close" size={22} color={theme.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              ref={transferScrollRef}
+              style={{ maxHeight: keyboardVisible ? 220 : 420 }}
+              contentContainerStyle={{
+                padding: 18,
+                paddingBottom: keyboardVisible ? 24 : 18,
+              }}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets={true}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Resumo do Veículo */}
+              <View
+                style={[
+                  styles.transferVehBanner,
+                  { backgroundColor: theme.bg, borderColor: theme.cardBorder },
+                ]}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.transferVehName, { color: theme.text }]}>
+                    {vehicle.name}
+                  </Text>
+                  <Text style={[styles.transferVehSub, { color: theme.textMuted }]}>
+                    Placa: {vehicle.plate} • {refuelings.length} abastecimento(s) • {maintenances.length} manutenção(ões)
+                  </Text>
+                </View>
+              </View>
+
+              {/* Box de Alerta Informativo */}
+              <View
+                style={[
+                  styles.transferAlertBox,
+                  {
+                    backgroundColor: isDark ? 'rgba(245, 158, 11, 0.12)' : '#FEF3C7',
+                    borderColor: isDark ? 'rgba(245, 158, 11, 0.3)' : '#FDE68A',
+                  },
+                ]}
+              >
+                <Ionicons name="warning-outline" size={20} color="#D97706" style={{ marginTop: 2 }} />
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={[styles.transferAlertTitle, { color: isDark ? '#FBBF24' : '#B45309' }]}>
+                    Ação Definitiva e Irreversível
+                  </Text>
+                  <Text style={[styles.transferAlertText, { color: isDark ? '#FDE68A' : '#92400E' }]}>
+                    Ao confirmar, o cadastro do veículo e todo o histórico de abastecimentos e manutenções serão transferidos diretamente para o novo proprietário. O veículo deixará de aparecer na sua garagem.
+                  </Text>
+                </View>
+              </View>
+
+              {/* Campo de E-mail do Destinatário */}
+              <View style={{ marginTop: 14 }}>
+                <Text style={[styles.transferInputLabel, { color: theme.text }]}>
+                  E-mail do novo proprietário no ContaGiro
+                </Text>
+                <TextInput
+                  style={[
+                    styles.transferInput,
+                    {
+                      backgroundColor: theme.bg,
+                      borderColor: theme.cardBorder,
+                      color: theme.text,
+                    },
+                  ]}
+                  placeholder="exemplo@email.com"
+                  placeholderTextColor={theme.textMuted}
+                  value={targetEmail}
+                  onChangeText={setTargetEmail}
+                  onFocus={() => {
+                    setTimeout(() => {
+                      transferScrollRef.current?.scrollToEnd({ animated: true });
+                    }, 150);
+                  }}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!transferring}
+                />
+                <Text style={[styles.transferInputHelp, { color: theme.textMuted }]}>
+                  O novo proprietário já deve possuir conta cadastrada no app ContaGiro.
+                </Text>
+              </View>
+            </ScrollView>
+
+            {/* Botões de Ação */}
+            <View
+              style={[
+                styles.transferModalFooter,
+                {
+                  borderTopColor: theme.cardBorder,
+                  paddingBottom: keyboardVisible ? 12 : Math.max(insets.bottom, 16),
+                },
+              ]}
+            >
+              <TouchableOpacity
+                style={[styles.transferCancelBtn, { borderColor: theme.cardBorder }]}
+                onPress={() => setTransferModalVisible(false)}
+                disabled={transferring}
+              >
+                <Text style={[styles.transferCancelBtnText, { color: theme.textMuted }]}>
+                  Cancelar
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.transferConfirmBtn,
+                  { opacity: transferring || !targetEmail.trim() ? 0.6 : 1 },
+                ]}
+                onPress={handleConfirmTransfer}
+                disabled={transferring || !targetEmail.trim()}
+              >
+                {transferring ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Ionicons name="swap-horizontal" size={18} color="#FFFFFF" />
+                    <Text style={styles.transferConfirmBtnText}>Transferir Agora</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* POP-UP DO GRÁFICO DOS ÚLTIMOS 12 MESES */}
       {selectedChartMetric && (
         <VehicleMetricChartModal
@@ -1234,6 +2083,22 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   headerPdfBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  headerTransferBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  headerShareBtn: {
     width: 38,
     height: 38,
     borderRadius: 12,
@@ -1490,6 +2355,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
   },
+  transferActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+  },
+  transferActionBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
   primaryActionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1674,6 +2552,211 @@ const styles = StyleSheet.create({
     color: '#EF4444',
     fontSize: 12,
     fontWeight: '600',
+  },
+  transferModalContainer: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    paddingTop: 16,
+  },
+  transferModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+  },
+  transferModalIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transferModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  transferModalCloseBtn: {
+    padding: 4,
+  },
+  transferVehBanner: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 12,
+  },
+  transferVehName: {
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 3,
+  },
+  transferVehSub: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  transferAlertBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 8,
+  },
+  transferAlertTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  transferAlertText: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  transferInputLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  transferInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  transferInputHelp: {
+    fontSize: 11,
+    marginTop: 6,
+    fontWeight: '500',
+  },
+  transferModalFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    borderTopWidth: 1,
+  },
+  transferCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  transferCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  transferConfirmBtn: {
+    flex: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#8B5CF6',
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  transferConfirmBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  sharedHeroBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  sharedHeroBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  shareActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+  },
+  shareActionBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  shareAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+  },
+  shareAddBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  sharedMemberCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  sharedMemberAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sharedMemberEmail: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  removeMemberBtn: {
+    padding: 8,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emptySharedBox: {
+    padding: 20,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  emptySharedText: {
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  closeShareDetailBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeShareDetailBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
   },
 });
 

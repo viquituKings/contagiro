@@ -208,6 +208,23 @@ export const SyncService = {
   },
 
   /**
+   * Remove todas as operações pendentes associadas a um veículo (veículo, abastecimentos, manutenções, configurações)
+   */
+  async removeByVehicleId(vehicleId: string): Promise<void> {
+    if (!vehicleId) return;
+    const rawQueue = await this.getRawQueue();
+    const updated = rawQueue.filter((item) => {
+      if (item.entityId === vehicleId) return false;
+      const p = item.payload as any;
+      if (p && (p.vehicleId === vehicleId || p.idVeiculo === vehicleId)) return false;
+      return true;
+    });
+    await AsyncStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(updated));
+    const count = await this.getPendingCount();
+    this.notifyListeners(count);
+  },
+
+  /**
    * Executa a sincronização de todas as pendências locais com o Firestore
    * Protegido contra execuções concorrentes (mutex) e com criação idempotente de documentos
    */
@@ -327,6 +344,9 @@ export const SyncService = {
               if (localVeh.qtdManutencoes != null) docData.qtdManutencoes = localVeh.qtdManutencoes;
               if (localVeh.order != null) docData.ordem = localVeh.order;
               if (localVeh.isPreferred != null) docData.preferido = localVeh.isPreferred;
+              if (localVeh.createdAt) docData.dataCadastro = localVeh.createdAt;
+              if (localVeh.transferredAt) docData.dataTransferencia = localVeh.transferredAt;
+              if (localVeh.transferredFrom) docData.transferidoDe = localVeh.transferredFrom;
 
               if (effectiveVehId && !effectiveVehId.startsWith('veh-')) {
                 await withFirestoreTimeout(
@@ -396,6 +416,10 @@ export const SyncService = {
               const effectiveVehId = idMap[refItem.vehicleId] || refItem.vehicleId;
               const localVeh =
                 cachedVehicles.find((v) => v.id === effectiveVehId || v.id === refItem.vehicleId);
+              const effectiveOwner =
+                localVeh?.isShared && localVeh.ownerEmail
+                  ? localVeh.ownerEmail.toLowerCase().trim()
+                  : userEmail;
 
               const rawComb =
                 refItem.fuelType === 'etanol'
@@ -420,6 +444,7 @@ export const SyncService = {
                 seTanqueCheio: refItem.isFullTank,
                 seAditivado: Boolean(refItem.isAdditivated),
                 observacao: refItem.notes || refItem.gasStation || '',
+                registradoPor: refItem.registeredBy || '',
               };
 
               // DEDUPLICAÇÃO NO FIRESTORE:
@@ -427,7 +452,7 @@ export const SyncService = {
               const subColRef = collection(
                 db,
                 'users',
-                userEmail,
+                effectiveOwner,
                 'veiculos',
                 effectiveVehId,
                 'abastecimentos'
@@ -481,8 +506,10 @@ export const SyncService = {
                 if (localVeh.qtdAbastecimentos != null) vehicleUpdates.qtdAbastecimentos = localVeh.qtdAbastecimentos;
               }
 
-              const vehicleDocRef = doc(db, 'users', userEmail, 'veiculos', effectiveVehId);
-              batch.set(vehicleDocRef, vehicleUpdates, { merge: true });
+              if (localVeh && !effectiveVehId.startsWith('veh-')) {
+                const vehicleDocRef = doc(db, 'users', effectiveOwner, 'veiculos', effectiveVehId);
+                batch.set(vehicleDocRef, vehicleUpdates, { merge: true });
+              }
 
               if (refItem.pricePerLiter > 0) {
                 const priceDocRef = doc(db, 'users', userEmail, 'configuracoes', 'precosCombustivel');
@@ -528,8 +555,14 @@ export const SyncService = {
             case 'DELETE_REFUELING': {
               const { id, vehicleId } = item.payload;
               const effectiveVehId = idMap[vehicleId] || vehicleId;
+              const localVeh =
+                cachedVehicles.find((v) => v.id === effectiveVehId || v.id === vehicleId);
+              const effectiveOwner =
+                localVeh?.isShared && localVeh.ownerEmail
+                  ? localVeh.ownerEmail.toLowerCase().trim()
+                  : userEmail;
               await withFirestoreTimeout(
-                () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', effectiveVehId, 'abastecimentos', id)),
+                () => deleteDoc(doc(db, 'users', effectiveOwner, 'veiculos', effectiveVehId, 'abastecimentos', id)),
                 3000
               );
               await this.dequeue(item.id);
@@ -542,6 +575,10 @@ export const SyncService = {
               const effectiveVehId = idMap[mnt.vehicleId] || mnt.vehicleId;
               const localVeh =
                 cachedVehicles.find((v) => v.id === effectiveVehId || v.id === mnt.vehicleId);
+              const effectiveOwner =
+                localVeh?.isShared && localVeh.ownerEmail
+                  ? localVeh.ownerEmail.toLowerCase().trim()
+                  : userEmail;
 
               const catValMap: Record<string, string> = {
                 oleo_filtro: 'TROLEO',
@@ -570,9 +607,12 @@ export const SyncService = {
                 ladoManutencao: mnt.side || '',
                 descricaoManutencao: mnt.description || mnt.workshop || '',
                 valorManutencao: mnt.cost,
+                observacoes: mnt.notes || '',
+                receiptUrl: mnt.receiptUrl || '',
+                registradoPor: mnt.registeredBy || '',
               };
 
-              const mntColRef = collection(db, 'users', userEmail, 'manutencoes');
+              const mntColRef = collection(db, 'users', effectiveOwner, 'manutencoes');
               let targetDocId = mnt.id;
 
               try {
@@ -625,31 +665,52 @@ export const SyncService = {
                 if (localVeh.proxEsticarCorrenteKm != null)
                   vehUpdates.proxEsticarCorrenteKm = localVeh.proxEsticarCorrenteKm;
 
-                batch.set(doc(db, 'users', userEmail, 'veiculos', effectiveVehId), vehUpdates, { merge: true });
+                batch.set(doc(db, 'users', effectiveOwner, 'veiculos', effectiveVehId), vehUpdates, { merge: true });
               }
 
-              await withFirestoreTimeout(() => batch.commit(), 3000);
+              await withFirestoreTimeout(() => batch.commit(), mnt.receiptUrl ? 7000 : 3000);
 
-              if (targetDocId !== mnt.id) {
-                try {
-                  const vehCacheKey = `@contagiro:maintenances_v1_${effectiveVehId}`;
-                  const vRaw = await AsyncStorage.getItem(vehCacheKey);
-                  if (vRaw) {
-                    const vList: MaintenanceItem[] = JSON.parse(vRaw).map((m: MaintenanceItem) =>
-                      m.id === mnt.id ? { ...m, id: targetDocId, vehicleId: effectiveVehId } : m
-                    );
-                    await AsyncStorage.setItem(vehCacheKey, JSON.stringify(vList));
+              try {
+                const updateCacheList = (raw: string | null) => {
+                  if (!raw) return raw;
+                  const list: MaintenanceItem[] = JSON.parse(raw);
+                  let found = false;
+                  const updated = list.map((m: MaintenanceItem) => {
+                    if (m.id === mnt.id || m.id === targetDocId) {
+                      found = true;
+                      return {
+                        ...m,
+                        id: targetDocId,
+                        vehicleId: effectiveVehId,
+                        receiptUrl: mnt.receiptUrl || m.receiptUrl,
+                        notes: mnt.notes || m.notes,
+                      };
+                    }
+                    return m;
+                  });
+                  if (!found) {
+                    updated.unshift({
+                      ...mnt,
+                      id: targetDocId,
+                      vehicleId: effectiveVehId,
+                    });
                   }
+                  return JSON.stringify(updated);
+                };
 
-                  const allRaw = await AsyncStorage.getItem('@contagiro:maintenances_v1');
-                  if (allRaw) {
-                    const aList: MaintenanceItem[] = JSON.parse(allRaw).map((m: MaintenanceItem) =>
-                      m.id === mnt.id ? { ...m, id: targetDocId, vehicleId: effectiveVehId } : m
-                    );
-                    await AsyncStorage.setItem('@contagiro:maintenances_v1', JSON.stringify(aList));
-                  }
-                } catch {}
-              }
+                const vehCacheKey = `@contagiro:maintenances_v1_${effectiveVehId}`;
+                const vRaw = await AsyncStorage.getItem(vehCacheKey);
+                if (vRaw) {
+                  const updatedVRaw = updateCacheList(vRaw);
+                  if (updatedVRaw) await AsyncStorage.setItem(vehCacheKey, updatedVRaw);
+                }
+
+                const allRaw = await AsyncStorage.getItem('@contagiro:maintenances_v1');
+                if (allRaw) {
+                  const updatedAllRaw = updateCacheList(allRaw);
+                  if (updatedAllRaw) await AsyncStorage.setItem('@contagiro:maintenances_v1', updatedAllRaw);
+                }
+              } catch {}
 
               await this.dequeue(item.id);
               syncedCount++;
@@ -657,9 +718,16 @@ export const SyncService = {
             }
 
             case 'DELETE_MAINTENANCE': {
-              const { id } = item.payload;
+              const { id, vehicleId } = item.payload;
+              const localVeh = vehicleId
+                ? cachedVehicles.find((v) => v.id === vehicleId)
+                : undefined;
+              const effectiveOwner =
+                localVeh?.isShared && localVeh.ownerEmail
+                  ? localVeh.ownerEmail.toLowerCase().trim()
+                  : userEmail;
               await withFirestoreTimeout(
-                () => deleteDoc(doc(db, 'users', userEmail, 'manutencoes', id)),
+                () => deleteDoc(doc(db, 'users', effectiveOwner, 'manutencoes', id)),
                 3000
               );
               await this.dequeue(item.id);
@@ -670,7 +738,8 @@ export const SyncService = {
             case 'SAVE_PERIODIC_CONFIG': {
               const { vehicleId, config } = item.payload;
               const effectiveVehId = idMap[vehicleId] || vehicleId;
-              if (!effectiveVehId.startsWith('veh-')) {
+              const localVeh = cachedVehicles.find((v) => v.id === effectiveVehId || v.id === vehicleId);
+              if (localVeh && !effectiveVehId.startsWith('veh-')) {
                 await withFirestoreTimeout(
                   () => setDoc(doc(db, 'users', userEmail, 'veiculos', effectiveVehId), config, { merge: true }),
                   3000

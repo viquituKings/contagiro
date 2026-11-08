@@ -133,15 +133,29 @@ export async function ensureOfflineCachedImage(
  * Isso reduz fotos de 12-48MP (5MB a 15MB) para apenas ~20KB a 35KB,
  * economizando mais de 99% de memória RAM e tráfego de rede.
  */
+export interface PickImageOptions {
+  targetSize?: number; // padrão 320px
+  compress?: number; // padrão 0.7
+  allowsEditing?: boolean;
+  aspect?: [number, number];
+  maxWidth?: number;
+}
+
+/**
+ * Solicita permissão e abre Câmera ou Galeria, recortando/redimensionando a imagem
+ * com compressão JPEG.
+ *
+ * Para avatares/veículos: quadrado 320x320 com compressão.
+ * Para documentos (NF/OS): livre (sem forçar corte) com maxWidth preservando proporção.
+ */
 export async function pickAndOptimizeImage(
   source: ImageSourceType,
-  options?: {
-    targetSize?: number; // padrão 320px
-    compress?: number; // padrão 0.7
-  }
+  options?: PickImageOptions
 ): Promise<OptimizedImageResult | null> {
   const targetSize = options?.targetSize || 320;
   const compress = options?.compress != null ? options?.compress : 0.7;
+  const allowsEditing = options?.allowsEditing ?? true;
+  const aspect = options?.aspect ?? [1, 1];
 
   try {
     let pickerResult: ImagePicker.ImagePickerResult;
@@ -158,8 +172,8 @@ export async function pickAndOptimizeImage(
 
       pickerResult = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [1, 1],
+        allowsEditing,
+        ...(allowsEditing && aspect ? { aspect } : {}),
         quality: 0.8,
       });
     } else {
@@ -174,8 +188,8 @@ export async function pickAndOptimizeImage(
 
       pickerResult = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [1, 1],
+        allowsEditing,
+        ...(allowsEditing && aspect ? { aspect } : {}),
         quality: 0.8,
       });
     }
@@ -186,10 +200,13 @@ export async function pickAndOptimizeImage(
 
     const rawUri = pickerResult.assets[0].uri;
 
-    // Redimensionamento agressivo para 320x320 e compressão JPEG
+    const resizeActions = options?.maxWidth
+      ? [{ resize: { width: options.maxWidth } }]
+      : [{ resize: { width: targetSize, height: targetSize } }];
+
     const manipulated = await manipulateAsync(
       rawUri,
-      [{ resize: { width: targetSize, height: targetSize } }],
+      resizeActions,
       {
         compress,
         format: SaveFormat.JPEG,
@@ -217,11 +234,14 @@ export async function pickAndOptimizeImage(
 /**
  * Exibe um diálogo de seleção entre Câmera e Galeria.
  */
-export function promptImageSource(): Promise<ImageSourceType | null> {
+export function promptImageSource(
+  dialogTitle = 'Selecionar Foto',
+  dialogMessage = 'Como você deseja escolher a imagem?'
+): Promise<ImageSourceType | null> {
   return new Promise((resolve) => {
     Alert.alert(
-      'Selecionar Foto',
-      'Como você deseja escolher a imagem?',
+      dialogTitle,
+      dialogMessage,
       [
         {
           text: 'Tirar Foto',
@@ -257,7 +277,8 @@ export async function uploadToFirebaseStorageOrFallback(
       return imageResult.base64Uri;
     }
 
-    const storageRef = ref(storage, storagePath);
+    const sanitizedPath = storagePath.replace(/[^\w/.\-_]/g, '_');
+    const storageRef = ref(storage, sanitizedPath);
 
     await withFirestoreTimeout(async () => {
       if (imageResult.base64Uri && imageResult.base64Uri.startsWith('data:')) {
@@ -269,9 +290,9 @@ export async function uploadToFirebaseStorageOrFallback(
           contentType: 'image/jpeg',
         });
       }
-    }, 2500);
+    }, 7000);
 
-    const downloadUrl = await withFirestoreTimeout(() => getDownloadURL(storageRef), 2000);
+    const downloadUrl = await withFirestoreTimeout(() => getDownloadURL(storageRef), 3500);
     return downloadUrl;
   } catch (error) {
     console.warn(

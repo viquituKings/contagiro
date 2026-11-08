@@ -327,20 +327,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   remotePhotoUrl: remotePhoto,
                 })
               );
-            } else if (customPhoto && customPhoto.startsWith('http')) {
-              // Se veio foto do Google Auth e ainda não estava no Firestore, salva em Base64 no cache local
-              const cachedBase64 = await ensureOfflineCachedImage(`user_${emailKey}`, customPhoto);
-              if (cachedBase64 && isMounted) {
-                setUser((prev) => (prev ? { ...prev, photoURL: cachedBase64 } : prev));
-                await AsyncStorage.setItem(
-                  `@contagiro:user_profile_${emailKey}`,
-                  JSON.stringify({
-                    displayName: customName,
-                    email: emailKey,
-                    photoUrl: cachedBase64,
-                    remotePhotoUrl: customPhoto,
-                  })
-                );
+            } else {
+              // Se o documento raiz ainda não existe no Firestore, cria/inicializa para que outros usuários e serviços encontrem
+              withFirestoreTimeout(
+                () =>
+                  setDoc(
+                    doc(db, 'users', emailKey),
+                    {
+                      email: emailKey,
+                      displayName: customName || currentUser.displayName || '',
+                      photoUrl: customPhoto || currentUser.photoURL || null,
+                      updatedAt: new Date().toISOString(),
+                    },
+                    { merge: true }
+                  ),
+                1500
+              ).catch(() => {});
+
+              if (customPhoto && customPhoto.startsWith('http')) {
+                // Se veio foto do Google Auth e ainda não estava no Firestore, salva em Base64 no cache local
+                const cachedBase64 = await ensureOfflineCachedImage(`user_${emailKey}`, customPhoto);
+                if (cachedBase64 && isMounted) {
+                  setUser((prev) => (prev ? { ...prev, photoURL: cachedBase64 } : prev));
+                  await AsyncStorage.setItem(
+                    `@contagiro:user_profile_${emailKey}`,
+                    JSON.stringify({
+                      displayName: customName,
+                      email: emailKey,
+                      photoUrl: cachedBase64,
+                      remotePhotoUrl: customPhoto,
+                    })
+                  );
+                }
               }
             }
           }

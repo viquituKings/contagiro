@@ -459,6 +459,35 @@ export default function GarageScreen() {
                           </TouchableOpacity>
                         )
                       )}
+                      {item.isShared ? (
+                        <View
+                          style={[
+                            styles.sharedTagBadge,
+                            {
+                              backgroundColor: isDark ? 'rgba(2, 132, 199, 0.16)' : '#E0F2FE',
+                            },
+                          ]}
+                        >
+                          <Ionicons name="people" size={10} color="#0284C7" />
+                          <Text style={[styles.sharedTagBadgeText, { color: isDark ? '#38BDF8' : '#0369A1' }]}>
+                            Compartilhado
+                          </Text>
+                        </View>
+                      ) : item.sharedWith && item.sharedWith.length > 0 ? (
+                        <View
+                          style={[
+                            styles.sharedTagBadge,
+                            {
+                              backgroundColor: isDark ? 'rgba(139, 92, 246, 0.16)' : '#EDE9FE',
+                            },
+                          ]}
+                        >
+                          <Ionicons name="people" size={10} color="#8B5CF6" />
+                          <Text style={[styles.sharedTagBadgeText, { color: isDark ? '#C084FC' : '#6D28D9' }]}>
+                            Compartilhado ({item.sharedWith.length})
+                          </Text>
+                        </View>
+                      ) : null}
                     </View>
                   </View>
 
@@ -1353,5 +1382,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  sharedTagBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  sharedTagBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
   },
 });

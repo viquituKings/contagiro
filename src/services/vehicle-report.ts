@@ -352,6 +352,21 @@ export async function generateVehicleReportHtml(params: {
   const dataEmissao = now.toLocaleDateString('pt-BR');
   const horaEmissao = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
+  const formatReportDate = (d?: string): string => {
+    if (!d) return '--';
+    try {
+      const [datePart] = d.split('T');
+      const parts = datePart.split('-');
+      if (parts.length === 3) {
+        const [year, month, day] = parts;
+        return `${day}/${month}/${year}`;
+      }
+      return d;
+    } catch {
+      return d;
+    }
+  };
+
   // 4. Montagem das linhas da tabela de resumo mensal (12 meses)
   const tableRowsHtml = chartConsumo.months
     .map((m, idx) => {
@@ -857,6 +872,20 @@ export async function generateVehicleReportHtml(params: {
         <div class="cadastral-label">Total de Abastecimentos</div>
         <div class="cadastral-value">${vehicle.qtdAbastecimentos || refuelings.length || 0} registros</div>
       </div>
+
+      <div class="cadastral-item">
+        <div class="cadastral-label">Data de Cadastro</div>
+        <div class="cadastral-value">${formatReportDate(vehicle.createdAt)}</div>
+      </div>
+      ${
+        vehicle.transferredAt
+          ? `
+      <div class="cadastral-item">
+        <div class="cadastral-label">Data de Transferência</div>
+        <div class="cadastral-value" style="color: #8B5CF6;">${formatReportDate(vehicle.transferredAt)}${vehicle.transferredFrom ? ` (De: ${vehicle.transferredFrom})` : ''}</div>
+      </div>`
+          : ''
+      }
     </div>
 
     ${
