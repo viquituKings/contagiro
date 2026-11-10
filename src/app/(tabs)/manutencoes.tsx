@@ -1,5 +1,10 @@
-import { auth } from '@/services/firebase';
-import { pickAndOptimizeImage, promptImageSource, uploadToFirebaseStorageOrFallback } from '@/services/image-picker';
+import { auth, checkOnlineStatus } from '@/services/firebase';
+import {
+  pickAndOptimizeImage,
+  promptImageSource,
+  uploadReceiptImageToStorage,
+  deleteStorageFile,
+} from '@/services/image-picker';
 import { Calculations } from '@/services/calculations';
 import { NotificationService } from '@/services/notifications';
 import { StorageService } from '@/services/storage';
@@ -376,6 +381,22 @@ export default function MaintenancesScreen() {
     setModalMntVisible(true);
   };
 
+  const handleCloseModal = () => {
+    if (savingMnt) return;
+    // Se o usuário anexou uma nova foto que foi enviada ao Storage mas cancelou sem salvar, remove do Storage
+    if (
+      receiptUrl &&
+      receiptUrl !== selectedMntDetails?.receiptUrl &&
+      (receiptUrl.includes('firebasestorage.googleapis.com') ||
+       receiptUrl.includes('firebasestorage.app') ||
+       receiptUrl.startsWith('gs://'))
+    ) {
+      deleteStorageFile(receiptUrl).catch(() => {});
+    }
+    setModalMntVisible(false);
+    setEditingMntId(null);
+  };
+
   const handleAttachReceipt = async () => {
     if (savingMnt || receiptLoading) return;
     const source = await promptImageSource(
@@ -393,11 +414,45 @@ export default function MaintenancesScreen() {
       });
 
       if (result) {
+        // Se já havia um comprovante recém-enviado nesta mesma sessão antes de salvar, descarta o anterior do Storage
+        if (
+          receiptUrl &&
+          receiptUrl !== selectedMntDetails?.receiptUrl &&
+          (receiptUrl.includes('firebasestorage.googleapis.com') ||
+           receiptUrl.includes('firebasestorage.app') ||
+           receiptUrl.startsWith('gs://'))
+        ) {
+          deleteStorageFile(receiptUrl).catch(() => {});
+        }
+
+        // Exibe preview imediato com o arquivo local do dispositivo
+        setReceiptUrl(result.uri);
+
         const cleanEmail = (auth.currentUser?.email || 'receipts').toLowerCase().trim();
         const safeVehId = (vehicle?.id || 'doc').replace(/[^\w-]/g, '_');
         const storagePath = `users/${cleanEmail}/receipts/${safeVehId}_${Date.now()}.jpg`;
-        const uploadedOrBase64 = await uploadToFirebaseStorageOrFallback(result, storagePath);
-        setReceiptUrl(uploadedOrBase64);
+
+        const isOnline = await checkOnlineStatus(false);
+        if (isOnline) {
+          try {
+            const downloadUrl = await uploadReceiptImageToStorage(result, storagePath);
+            setReceiptUrl(downloadUrl);
+          } catch (uploadErr) {
+            console.warn('Erro ao subir para o Firebase Storage no anexo:', uploadErr);
+            setReceiptUrl(result.uri);
+            Alert.alert(
+              'Aviso',
+              'O documento foi anexado localmente. O envio para o Firebase Storage será concluído ao salvar a manutenção.'
+            );
+          }
+        } else {
+          // Offline: mantém URI local para preview no app
+          setReceiptUrl(result.uri);
+          Alert.alert(
+            'Modo Offline',
+            'Comprovante salvo no aparelho. Ele será enviado para o Firebase Cloud Storage quando houver conexão com a internet.'
+          );
+        }
       }
     } catch (err) {
       console.error('Erro ao anexar comprovante da manutenção:', err);
@@ -562,6 +617,18 @@ export default function MaintenancesScreen() {
       };
 
       await StorageService.addMaintenance(mntToSave);
+
+      // Se estava editando e o comprovante antigo no Storage foi alterado ou removido, remove o antigo do Storage
+      if (
+        selectedMntDetails?.receiptUrl &&
+        selectedMntDetails.receiptUrl !== receiptUrl &&
+        (selectedMntDetails.receiptUrl.includes('firebasestorage.googleapis.com') ||
+         selectedMntDetails.receiptUrl.includes('firebasestorage.app') ||
+         selectedMntDetails.receiptUrl.startsWith('gs://'))
+      ) {
+        deleteStorageFile(selectedMntDetails.receiptUrl).catch(() => {});
+      }
+
       setModalMntVisible(false);
       setEditingMntId(null);
       await loadData();
@@ -1250,12 +1317,7 @@ export default function MaintenancesScreen() {
           transparent
           animationType="slide"
           statusBarTranslucent={true}
-          onRequestClose={() => {
-            if (!savingMnt) {
-              setModalMntVisible(false);
-              setEditingMntId(null);
-            }
-          }}
+          onRequestClose={handleCloseModal}
         >
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -1266,9 +1328,8 @@ export default function MaintenancesScreen() {
               onPress={() => {
                 if (keyboardVisible) {
                   Keyboard.dismiss();
-                } else if (!savingMnt) {
-                  setModalMntVisible(false);
-                  setEditingMntId(null);
+                } else {
+                  handleCloseModal();
                 }
               }}
             />
@@ -1293,12 +1354,7 @@ export default function MaintenancesScreen() {
                   </Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => {
-                    if (!savingMnt) {
-                      setModalMntVisible(false);
-                      setEditingMntId(null);
-                    }
-                  }}
+                  onPress={handleCloseModal}
                   disabled={savingMnt}
                   style={{ opacity: savingMnt ? 0.5 : 1 }}
                 >
@@ -1532,7 +1588,7 @@ export default function MaintenancesScreen() {
                     <View style={[styles.receiptAttachBox, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
                       <ActivityIndicator size="small" color={theme.blue} />
                       <Text style={[styles.receiptAttachText, { color: theme.textMuted }]}>
-                        Processando imagem...
+                        Enviando para o Firebase Storage...
                       </Text>
                     </View>
                   ) : receiptUrl ? (
@@ -1568,7 +1624,19 @@ export default function MaintenancesScreen() {
 
                         <TouchableOpacity
                           style={[styles.receiptActionBtn, { borderColor: theme.cardBorder }]}
-                          onPress={() => setReceiptUrl(null)}
+                          onPress={() => {
+                            // Se havia um comprovante recém-enviado nesta mesma sessão que não seja o do item salvo original, remove do Storage
+                            if (
+                              receiptUrl &&
+                              receiptUrl !== selectedMntDetails?.receiptUrl &&
+                              (receiptUrl.includes('firebasestorage.googleapis.com') ||
+                               receiptUrl.includes('firebasestorage.app') ||
+                               receiptUrl.startsWith('gs://'))
+                            ) {
+                              deleteStorageFile(receiptUrl).catch(() => {});
+                            }
+                            setReceiptUrl(null);
+                          }}
                           disabled={savingMnt}
                         >
                           <Ionicons name="trash-outline" size={14} color={theme.red} />

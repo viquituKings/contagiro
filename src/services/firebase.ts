@@ -95,7 +95,7 @@ export async function checkOnlineStatus(force = false): Promise<boolean> {
 
   pendingProbePromise = (async () => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1100);
+    const timer = setTimeout(() => controller.abort(), 4000);
     try {
       await fetch(`https://${firebaseConfig.authDomain}`, {
         method: 'HEAD',
@@ -107,8 +107,21 @@ export async function checkOnlineStatus(force = false): Promise<boolean> {
       return true;
     } catch {
       clearTimeout(timer);
-      markNetworkStatus(false);
-      return false;
+      try {
+        const c2 = new AbortController();
+        const t2 = setTimeout(() => c2.abort(), 2500);
+        await fetch('https://clients3.google.com/generate_204', {
+          method: 'HEAD',
+          cache: 'no-store',
+          signal: c2.signal,
+        });
+        clearTimeout(t2);
+        markNetworkStatus(true);
+        return true;
+      } catch {
+        markNetworkStatus(false);
+        return false;
+      }
     } finally {
       pendingProbePromise = null;
     }
@@ -169,6 +182,34 @@ export async function withFirestoreTimeout<T>(
   } catch (err) {
     markNetworkStatus(false);
     throw err;
+  } finally {
+    if (timerId) clearTimeout(timerId);
+  }
+}
+
+/**
+ * Executa uma operação de upload para o Firebase Storage com timeout seguro (ex: 60s)
+ * apropriado para envio de arquivos de imagem, isolado de timeouts curtos de queries.
+ */
+export async function withStorageUploadTimeout<T>(
+  operationFactory: (() => Promise<T>) | Promise<T>,
+  timeoutMs = 60000
+): Promise<T> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    markNetworkStatus(false);
+    throw new Error('Dispositivo offline');
+  }
+
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timerId = setTimeout(() => {
+      reject(new Error(`Tempo limite de envio para o Firebase Storage excedido (${Math.round(timeoutMs / 1000)}s)`));
+    }, timeoutMs);
+  });
+
+  try {
+    const opPromise = typeof operationFactory === 'function' ? operationFactory() : operationFactory;
+    return await Promise.race([opPromise, timeoutPromise]);
   } finally {
     if (timerId) clearTimeout(timerId);
   }

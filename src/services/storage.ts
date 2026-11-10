@@ -22,7 +22,12 @@ import {
   FuelPrices,
 } from '@/types/vehicle';
 import { SyncService } from '@/services/sync-service';
-import { ensureOfflineCachedImage, saveAvatarToLocalCache } from '@/services/image-picker';
+import {
+  ensureOfflineCachedImage,
+  saveAvatarToLocalCache,
+  uploadReceiptImageToStorage,
+  deleteStorageFile,
+} from '@/services/image-picker';
 import { compareDatesDesc } from '@/utils/date';
 import { parseEngineDisplacement } from '@/utils/engine';
 
@@ -193,6 +198,49 @@ export function deduplicateMaintenances(list: MaintenanceItem[]): {
   }
 
   return { unique, duplicateIds };
+}
+
+/**
+ * Migra em segundo plano comprovantes legados que foram gravados como Base64 no Firestore
+ * para o Firebase Cloud Storage, substituindo a string Base64 pela URL remota do Storage.
+ */
+function migrateFirestoreBase64ReceiptsInBackground(
+  userEmail: string,
+  maintenances: MaintenanceItem[]
+): void {
+  const itemsWithBase64 = maintenances.filter(
+    (m) => typeof m.receiptUrl === 'string' && m.receiptUrl.startsWith('data:')
+  );
+  if (itemsWithBase64.length === 0) return;
+
+  (async () => {
+    const isOnline = await checkOnlineStatus(false);
+    if (!isOnline) return;
+
+    for (const item of itemsWithBase64) {
+      try {
+        const safeVehId = (item.vehicleId || 'doc').replace(/[^\w-]/g, '_');
+        const storagePath = `users/${userEmail.toLowerCase().trim()}/receipts/${safeVehId}_${item.id}.jpg`;
+        const downloadUrl = await uploadReceiptImageToStorage(item.receiptUrl!, storagePath);
+
+        const mntDocRef = doc(db, 'users', userEmail.toLowerCase().trim(), 'manutencoes', item.id);
+        await setDoc(mntDocRef, { receiptUrl: downloadUrl }, { merge: true });
+        item.receiptUrl = downloadUrl;
+
+        const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.MAINTENANCES);
+        if (cachedRaw) {
+          const cachedList: MaintenanceItem[] = JSON.parse(cachedRaw);
+          const idx = cachedList.findIndex((m) => m.id === item.id);
+          if (idx !== -1) {
+            cachedList[idx].receiptUrl = downloadUrl;
+            await AsyncStorage.setItem(STORAGE_KEYS.MAINTENANCES, JSON.stringify(cachedList));
+          }
+        }
+      } catch (migrationErr) {
+        console.warn(`Migração silenciosa de comprovante para Storage falhou (${item.id}):`, migrationErr);
+      }
+    }
+  })().catch(() => {});
 }
 
 /**
@@ -3082,6 +3130,7 @@ export const StorageService = {
         // Limpa duplicatas no Firestore se existirem
         const { unique: dedupedFsMnts, duplicateIds: dupFsMntIds } = deduplicateMaintenances(list);
         list = dedupedFsMnts;
+        migrateFirestoreBase64ReceiptsInBackground(userEmail, list);
         if (dupFsMntIds.length > 0) {
           for (const dId of dupFsMntIds) {
             withFirestoreTimeout(
@@ -3288,6 +3337,44 @@ export const StorageService = {
             ? vehicle.ownerEmail.toLowerCase().trim()
             : userEmail;
 
+        // Se o comprovante for uma URI local ou Base64, envia para o Firebase Storage antes de gravar no Firestore
+        let receiptUrlToSave = calculatedMnt.receiptUrl || '';
+        if (
+          receiptUrlToSave &&
+          !receiptUrlToSave.startsWith('http://') &&
+          !receiptUrlToSave.startsWith('https://')
+        ) {
+          try {
+            const safeVehId = (maintenance.vehicleId || 'doc').replace(/[^\w-]/g, '_');
+            const storagePath = `users/${effectiveOwner}/receipts/${safeVehId}_${Date.now()}.jpg`;
+            const downloadUrl = await uploadReceiptImageToStorage(receiptUrlToSave, storagePath);
+            receiptUrlToSave = downloadUrl;
+            calculatedMnt.receiptUrl = downloadUrl;
+            maintenance.receiptUrl = downloadUrl;
+          } catch (uploadErr) {
+            console.warn(
+              'Não foi possível enviar comprovante para o Firebase Storage antes de salvar:',
+              uploadErr
+            );
+            // NUNCA grava Base64 no Firestore: se o upload falhou, não envia para o Firestore agora
+            receiptUrlToSave = '';
+            savedOnline = false;
+          }
+        }
+
+        // Se a manutenção está sendo editada e o comprovante anterior foi alterado ou removido, remove o antigo do Storage
+        const oldMnt = existingMaintenances.find((m) => m.id === calculatedMnt.id);
+        const previousReceiptUrl = oldMnt?.receiptUrl;
+        if (
+          previousReceiptUrl &&
+          previousReceiptUrl !== receiptUrlToSave &&
+          (previousReceiptUrl.includes('firebasestorage.googleapis.com') ||
+           previousReceiptUrl.includes('firebasestorage.app') ||
+           previousReceiptUrl.startsWith('gs://'))
+        ) {
+          deleteStorageFile(previousReceiptUrl).catch(() => {});
+        }
+
         const firestoreData: Record<string, unknown> = {
           veiculoId: maintenance.vehicleId,
           veiculo: vehicle?.plate || '',
@@ -3299,7 +3386,7 @@ export const StorageService = {
           descricaoManutencao: maintenance.description || maintenance.workshop || '',
           valorManutencao: maintenance.cost,
           observacoes: maintenance.notes || '',
-          receiptUrl: maintenance.receiptUrl || '',
+          receiptUrl: receiptUrlToSave.startsWith('http') ? receiptUrlToSave : '',
           registradoPor: calculatedMnt.registeredBy || userAttribution,
         };
 
@@ -3393,6 +3480,9 @@ export const StorageService = {
         : userEmail;
 
     if (effectiveOwner) {
+      if (itemToDelete?.receiptUrl) {
+        deleteStorageFile(itemToDelete.receiptUrl).catch(() => {});
+      }
       await withFirestoreTimeout(
         () => deleteDoc(doc(db, 'users', effectiveOwner, 'manutencoes', id)),
         2000

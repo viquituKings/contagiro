@@ -3,8 +3,8 @@ import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image as ExpoImage } from 'expo-image';
-import { ref, uploadBytes, uploadString, getDownloadURL } from 'firebase/storage';
-import { storage, withFirestoreTimeout, checkOnlineStatus } from '@/services/firebase';
+import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { storage, checkOnlineStatus, withStorageUploadTimeout } from '@/services/firebase';
 
 export interface OptimizedImageResult {
   /** URI local em cache no dispositivo */
@@ -263,42 +263,135 @@ export function promptImageSource(
 }
 
 /**
- * Faz upload de uma imagem para o Firebase Cloud Storage.
- * Caso o Firebase Storage não esteja ativo ou retorne erro, faz fallback para a base64Uri
- * permitindo que a imagem seja armazenada no Firestore sem interrupção de fluxo.
+ * Converte qualquer URI (file://, content://, data:image/...) em um Blob binário nativo e limpo
+ * usando XMLHttpRequest com responseType="blob", método padrão ouro no ecossistema React Native / Expo.
+ */
+export async function uriToBlob(uri: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.onload = function () {
+      if (xhr.response) {
+        resolve(xhr.response as Blob);
+      } else {
+        reject(new Error('Resposta vazia ao converter URI para Blob'));
+      }
+    };
+    xhr.onerror = function (e) {
+      reject(new TypeError(`Erro ao converter URI para Blob: ${e}`));
+    };
+    xhr.responseType = 'blob';
+    xhr.open('GET', uri, true);
+    xhr.send(null);
+  });
+}
+
+/**
+ * Faz upload do comprovante/nota fiscal da manutenção exclusivamente para o Firebase Cloud Storage.
+ * Retorna a URL remota de download (HTTPS).
+ * NUNCA retorna Base64, garantindo que o banco de dados Firestore não armazene imagens em Base64.
+ *
+ * Utiliza o caminho de arquivo nativo (file://) convertido diretamente em Blob nativo,
+ * evitando qualquer corrupção de bytes binários em ambientes React Native.
+ */
+export async function uploadReceiptImageToStorage(
+  imageInput: OptimizedImageResult | string,
+  storagePath: string
+): Promise<string> {
+  // Se já for uma URL remota do Firebase Storage / HTTPS, retorna diretamente
+  if (
+    typeof imageInput === 'string' &&
+    (imageInput.startsWith('https://') || imageInput.startsWith('http://'))
+  ) {
+    return imageInput;
+  }
+
+  const isOnline = await checkOnlineStatus(false);
+  if (!isOnline) {
+    throw new Error('Dispositivo offline. Não foi possível conectar ao Firebase Cloud Storage.');
+  }
+
+  // Define a URI fonte para criar o Blob nativo
+  let sourceUri: string;
+  if (typeof imageInput === 'string') {
+    sourceUri = imageInput;
+  } else {
+    // Preferência absoluta pelo caminho de arquivo local (file://) para leitura binária direta sem re-codificação
+    sourceUri = imageInput.uri || imageInput.base64Uri;
+  }
+
+  if (!sourceUri) {
+    throw new Error('Nenhum dado de imagem válido fornecido para upload.');
+  }
+
+  const sanitizedPath = storagePath.replace(/[^\w/.\-_]/g, '_');
+  const storageRef = ref(storage, sanitizedPath);
+
+  // Converte a URI para um Blob nativo sem passar por strings ou bitwise arrays que corrompem o arquivo
+  let blob: Blob | null = null;
+  try {
+    blob = await uriToBlob(sourceUri);
+  } catch (xhrErr) {
+    console.warn('uriToBlob falhou via XHR, tentando fetch:', xhrErr);
+    const resp = await fetch(sourceUri);
+    blob = await resp.blob();
+  }
+
+  if (!blob) {
+    throw new Error('Não foi possível gerar os bytes da imagem para upload.');
+  }
+
+  try {
+    // Envia o Blob nativo para o Firebase Storage com timeout estendido de 60s
+    await withStorageUploadTimeout(
+      uploadBytes(storageRef, blob, {
+        contentType: 'image/jpeg',
+      }),
+      60000
+    );
+
+    const downloadUrl = await withStorageUploadTimeout(getDownloadURL(storageRef), 15000);
+    return downloadUrl;
+  } finally {
+    // Libera a referência de memória do Blob nativo no React Native
+    if (blob && typeof (blob as any).close === 'function') {
+      try {
+        (blob as any).close();
+      } catch {}
+    }
+  }
+}
+
+/**
+ * @deprecated Use uploadReceiptImageToStorage. Não retorna Base64 em caso de erro para evitar gravar Base64 no banco de dados.
  */
 export async function uploadToFirebaseStorageOrFallback(
   imageResult: OptimizedImageResult,
   storagePath: string
 ): Promise<string> {
+  return uploadReceiptImageToStorage(imageResult, storagePath);
+}
+
+/**
+ * Remove com segurança um arquivo do Firebase Cloud Storage a partir de sua URL remota ou caminho.
+ * Ignora silenciosamente erros caso o arquivo já não exista (storage/object-not-found).
+ */
+export async function deleteStorageFile(urlOrPath?: string | null): Promise<void> {
+  if (!urlOrPath) return;
+
+  const isStorageUrl =
+    urlOrPath.includes('firebasestorage.googleapis.com') ||
+    urlOrPath.includes('firebasestorage.app') ||
+    urlOrPath.startsWith('gs://');
+
+  if (!isStorageUrl) return;
+
   try {
-    const online = await checkOnlineStatus(false);
-    if (!online) {
-      return imageResult.base64Uri;
+    const fileRef = ref(storage, urlOrPath);
+    await deleteObject(fileRef);
+  } catch (err: unknown) {
+    const errorCode = (err as { code?: string })?.code;
+    if (errorCode !== 'storage/object-not-found') {
+      console.warn('Aviso: falha ao remover arquivo do Firebase Storage:', err);
     }
-
-    const sanitizedPath = storagePath.replace(/[^\w/.\-_]/g, '_');
-    const storageRef = ref(storage, sanitizedPath);
-
-    await withFirestoreTimeout(async () => {
-      if (imageResult.base64Uri && imageResult.base64Uri.startsWith('data:')) {
-        await uploadString(storageRef, imageResult.base64Uri, 'data_url');
-      } else {
-        const response = await fetch(imageResult.uri);
-        const blob = await response.blob();
-        await uploadBytes(storageRef, blob, {
-          contentType: 'image/jpeg',
-        });
-      }
-    }, 7000);
-
-    const downloadUrl = await withFirestoreTimeout(() => getDownloadURL(storageRef), 3500);
-    return downloadUrl;
-  } catch (error) {
-    console.warn(
-      'Aviso: Não foi possível enviar para o Firebase Storage. Utilizando Base64 comprimida no banco de dados:',
-      error
-    );
-    return imageResult.base64Uri;
   }
 }

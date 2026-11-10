@@ -11,7 +11,11 @@ import {
 } from 'firebase/firestore';
 import { auth, db, checkOnlineStatus, withFirestoreTimeout } from '@/services/firebase';
 import { Vehicle, Refueling, MaintenanceItem } from '@/types/vehicle';
-import { saveAvatarToLocalCache } from '@/services/image-picker';
+import {
+  saveAvatarToLocalCache,
+  uploadReceiptImageToStorage,
+  deleteStorageFile,
+} from '@/services/image-picker';
 
 export type SyncAction =
   | 'SAVE_VEHICLE'
@@ -597,6 +601,29 @@ export const SyncService = {
                 outros: 'OUTROS',
               };
 
+              // Se o comprovante ainda estiver em URI local ou Base64, faz upload para o Firebase Storage antes de gravar no Firestore
+              let remoteReceiptUrl = mnt.receiptUrl || '';
+              if (
+                remoteReceiptUrl &&
+                !remoteReceiptUrl.startsWith('http://') &&
+                !remoteReceiptUrl.startsWith('https://')
+              ) {
+                try {
+                  const safeVehId = (effectiveVehId || 'doc').replace(/[^\w-]/g, '_');
+                  const storagePath = `users/${effectiveOwner}/receipts/${safeVehId}_${Date.now()}.jpg`;
+                  const downloadUrl = await uploadReceiptImageToStorage(remoteReceiptUrl, storagePath);
+                  remoteReceiptUrl = downloadUrl;
+                  mnt.receiptUrl = downloadUrl;
+                } catch (uploadErr) {
+                  console.warn(
+                    'Erro ao enviar comprovante pendente para o Firebase Storage durante sincronização:',
+                    uploadErr
+                  );
+                  // NUNCA grava Base64 no Firestore
+                  remoteReceiptUrl = '';
+                }
+              }
+
               const firestoreData: Record<string, unknown> = {
                 veiculoId: effectiveVehId,
                 veiculo: localVeh?.plate || '',
@@ -608,7 +635,7 @@ export const SyncService = {
                 descricaoManutencao: mnt.description || mnt.workshop || '',
                 valorManutencao: mnt.cost,
                 observacoes: mnt.notes || '',
-                receiptUrl: mnt.receiptUrl || '',
+                receiptUrl: remoteReceiptUrl.startsWith('http') ? remoteReceiptUrl : '',
                 registradoPor: mnt.registeredBy || '',
               };
 
@@ -632,7 +659,26 @@ export const SyncService = {
 
                   if (matchingDocs.length > 0) {
                     targetDocId = matchingDocs[0].id;
+                    const existingDocData = matchingDocs[0].data();
+                    const prevReceiptUrl = String(
+                      existingDocData.receiptUrl || existingDocData.notaFiscalUrl || ''
+                    );
+                    if (
+                      prevReceiptUrl &&
+                      prevReceiptUrl !== remoteReceiptUrl &&
+                      (prevReceiptUrl.includes('firebasestorage.googleapis.com') ||
+                       prevReceiptUrl.includes('firebasestorage.app') ||
+                       prevReceiptUrl.startsWith('gs://'))
+                    ) {
+                      deleteStorageFile(prevReceiptUrl).catch(() => {});
+                    }
+
                     for (let i = 1; i < matchingDocs.length; i++) {
+                      const dupDocData = matchingDocs[i].data();
+                      const dupReceipt = String(dupDocData.receiptUrl || dupDocData.notaFiscalUrl || '');
+                      if (dupReceipt && dupReceipt !== remoteReceiptUrl) {
+                        deleteStorageFile(dupReceipt).catch(() => {});
+                      }
                       deleteDoc(matchingDocs[i].ref).catch(() => {});
                     }
                   }
@@ -668,7 +714,7 @@ export const SyncService = {
                 batch.set(doc(db, 'users', effectiveOwner, 'veiculos', effectiveVehId), vehUpdates, { merge: true });
               }
 
-              await withFirestoreTimeout(() => batch.commit(), mnt.receiptUrl ? 7000 : 3000);
+              await withFirestoreTimeout(() => batch.commit(), 3000);
 
               try {
                 const updateCacheList = (raw: string | null) => {
@@ -682,7 +728,8 @@ export const SyncService = {
                         ...m,
                         id: targetDocId,
                         vehicleId: effectiveVehId,
-                        receiptUrl: mnt.receiptUrl || m.receiptUrl,
+                        receiptUrl:
+                          remoteReceiptUrl || (m.receiptUrl?.startsWith('http') ? m.receiptUrl : undefined),
                         notes: mnt.notes || m.notes,
                       };
                     }
@@ -693,6 +740,8 @@ export const SyncService = {
                       ...mnt,
                       id: targetDocId,
                       vehicleId: effectiveVehId,
+                      receiptUrl:
+                        remoteReceiptUrl || (mnt.receiptUrl?.startsWith('http') ? mnt.receiptUrl : undefined),
                     });
                   }
                   return JSON.stringify(updated);

@@ -116,7 +116,7 @@ export interface MaintenanceItem {
   side?: string; // Código do lado (ex: 'DIANTEIRO_ESQUERDO', 'DIANTEIRO', etc.)
   sideLabel?: string; // Descrição amigável do lado (ex: "Dianteiro Esquerdo")
   notes?: string; // Observações adicionais sobre o serviço/peças
-  receiptUrl?: string; // URL remota (Firebase Storage) ou base64 data URI da nota fiscal / ordem de serviço
+  receiptUrl?: string; // URL remota no Firebase Cloud Storage (ou URI local temporária para exibição offline antes do upload)
   registeredBy?: string; // Nome/e-mail do usuário que registrou a manutenção
 }
 
