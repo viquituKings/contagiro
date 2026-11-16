@@ -1,3 +1,4 @@
+import { auth } from '@/services/firebase';
 import { StorageService } from '@/services/storage';
 import { FuelType, Refueling, Vehicle } from '@/types/vehicle';
 import { compareDatesDesc, formatDateToBR } from '@/utils/date';
@@ -47,6 +48,13 @@ export default function RefuelingsScreen() {
   const [selectedRefuelingDetails, setSelectedRefuelingDetails] = useState<Refueling | null>(null);
   const [detailsModalVisible, setDetailsModalVisible] = useState(false);
   const [editingRefuelingId, setEditingRefuelingId] = useState<string | null>(null);
+
+  // Permissão do usuário sobre o veículo selecionado (apenas proprietário edita/exclui registros)
+  const currentUserEmail = auth.currentUser?.email?.toLowerCase().trim() || '';
+  const ownerEmail = vehicle?.ownerEmail?.toLowerCase().trim() || '';
+  const isOwner = vehicle
+    ? (!vehicle.isShared || (Boolean(ownerEmail) && currentUserEmail === ownerEmail))
+    : true;
 
   // Formulário de Abastecimento
   const [odometer, setOdometer] = useState('');
@@ -213,20 +221,27 @@ export default function RefuelingsScreen() {
   };
 
   const handleOpenDetails = (item: Refueling) => {
-    setSelectedRefuelingDetails(item);
+    setSelectedRefuelingDetails({ ...item });
     setDetailsModalVisible(true);
   };
 
   const handleEditRefueling = (item: Refueling) => {
     if (isSwitchingVehicle) return;
+    if (!isOwner) {
+      Alert.alert(
+        'Acesso Restrito',
+        'Apenas o proprietário deste veículo tem permissão para editar registros de abastecimento.'
+      );
+      return;
+    }
     setDetailsModalVisible(false);
     setEditingRefuelingId(item.id);
-    setOdometer(String(item.odometer));
-    setFuelType(item.fuelType);
-    setPricePerLiter(item.pricePerLiter ? item.pricePerLiter.toFixed(2).replace('.', ',') : '');
-    setTotalAmount(item.totalAmount ? item.totalAmount.toFixed(2).replace('.', ',') : '');
-    setLiters(item.liters ? item.liters.toFixed(2).replace('.', ',') : '');
-    setIsFullTank(item.isFullTank);
+    setOdometer(String(item.odometer || ''));
+    setFuelType(item.fuelType || 'gasolina');
+    setPricePerLiter(item.pricePerLiter ? Number(item.pricePerLiter).toFixed(2).replace('.', ',') : '');
+    setTotalAmount(item.totalAmount ? Number(item.totalAmount).toFixed(2).replace('.', ',') : '');
+    setLiters(item.liters ? Number(item.liters).toFixed(2).replace('.', ',') : '');
+    setIsFullTank(item.isFullTank ?? true);
     setIsAdditivated(Boolean(item.isAdditivated));
     setNotes(item.notes || item.gasStation || '');
     if (item.date) {
@@ -293,12 +308,22 @@ export default function RefuelingsScreen() {
   ) => {
     if (!vehicle || saving) return;
 
+    if (editingRefuelingId && !isOwner) {
+      Alert.alert(
+        'Acesso Restrito',
+        'Apenas o proprietário deste veículo tem permissão para editar registros de abastecimento.'
+      );
+      return;
+    }
+
     setSaving(true);
     try {
       const calculatedLiters =
         isNaN(litersNum) || litersNum <= 0
           ? Number((totalNum / priceNum).toFixed(2))
           : litersNum;
+
+      const userAttribution = auth.currentUser?.displayName || auth.currentUser?.email || undefined;
 
       const newRef: Refueling = {
         id: editingRefuelingId || ('ref-' + Date.now()),
@@ -316,7 +341,7 @@ export default function RefuelingsScreen() {
         gasStation: notes.trim() || undefined,
         registeredBy: editingRefuelingId
           ? selectedRefuelingDetails?.registeredBy
-          : undefined,
+          : userAttribution,
       };
 
       await StorageService.addRefueling(newRef);
@@ -371,6 +396,13 @@ export default function RefuelingsScreen() {
   };
 
   const handleDelete = (id: string) => {
+    if (!isOwner) {
+      Alert.alert(
+        'Acesso Restrito',
+        'Apenas o proprietário deste veículo tem permissão para excluir registros de abastecimento.'
+      );
+      return;
+    }
     Alert.alert('Excluir Abastecimento', 'Deseja realmente remover este registro do histórico e do banco de dados?', [
       { text: 'Cancelar', style: 'cancel' },
       {
@@ -397,8 +429,8 @@ export default function RefuelingsScreen() {
     amber: '#F59E0B',
   };
 
-  const getFuelBadgeColor = (type: FuelType) => {
-    switch (type) {
+  const getFuelBadgeColor = (type?: FuelType | string) => {
+    switch (type?.toLowerCase()) {
       case 'gasolina':
         return '#EF4444';
       case 'etanol':
@@ -407,6 +439,8 @@ export default function RefuelingsScreen() {
         return '#3B82F6';
       case 'gnv':
         return '#8B5CF6';
+      default:
+        return '#10B981';
     }
   };
 
@@ -748,7 +782,7 @@ export default function RefuelingsScreen() {
                           { color: getFuelBadgeColor(item.fuelType) },
                         ]}
                       >
-                        {item.fuelType.toUpperCase()}
+                        {(item.fuelType || 'gasolina').toUpperCase()}
                       </Text>
                     </View>
 
@@ -769,35 +803,37 @@ export default function RefuelingsScreen() {
                     )}
                   </View>
 
-                  <TouchableOpacity
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    onPress={(e) => {
-                      e.stopPropagation?.();
-                      handleDelete(item.id);
-                    }}
-                  >
-                    <Ionicons name="trash-outline" size={17} color="#EF4444" />
-                  </TouchableOpacity>
+                  {isOwner && (
+                    <TouchableOpacity
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      onPress={(e) => {
+                        e.stopPropagation?.();
+                        handleDelete(item.id);
+                      }}
+                    >
+                      <Ionicons name="trash-outline" size={17} color="#EF4444" />
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 <View style={styles.cardMidRow}>
                   <View>
                     <Text style={[styles.totalAmount, { color: theme.text }]}>
-                      R$ {item.totalAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      R$ {Number(item.totalAmount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </Text>
                     <Text style={[styles.litersAndPrice, { color: theme.textMuted }]}>
-                      {item.liters.toFixed(2)} L × R$ {item.pricePerLiter.toFixed(2)}/L
+                      {Number(item.liters || 0).toFixed(2)} L × R$ {Number(item.pricePerLiter || 0).toFixed(2)}/L
                     </Text>
                   </View>
 
                   {item.consumptionKmPerLiter ? (
                     <View style={styles.consumptionBox}>
                       <Text style={[styles.consumptionValue, { color: theme.accent }]}>
-                        {item.consumptionKmPerLiter} <Text style={{ fontSize: 11 }}>km/L</Text>
+                        {Number(item.consumptionKmPerLiter).toFixed(2)} <Text style={{ fontSize: 11 }}>km/L</Text>
                       </Text>
                       {item.costPerKm && (
                         <Text style={[styles.costPerKmText, { color: theme.textMuted }]}>
-                          R$ {item.costPerKm.toFixed(2)}/km
+                          R$ {Number(item.costPerKm).toFixed(2)}/km
                         </Text>
                       )}
                     </View>
@@ -814,11 +850,11 @@ export default function RefuelingsScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <Ionicons name="speedometer-outline" size={14} color={theme.textMuted} />
                     <Text style={[styles.odometerText, { color: theme.textMuted }]}>
-                      {item.odometer.toLocaleString('pt-BR')} km
+                      {Number(item.odometer || 0).toLocaleString('pt-BR')} km
                     </Text>
                     {item.distanceTraveled != null && item.distanceTraveled > 0 && (
                       <Text style={[styles.distanceText, { color: theme.accent }]}>
-                        (+{item.distanceTraveled} km rodados)
+                        (+{Number(item.distanceTraveled).toLocaleString('pt-BR')} km rodados)
                       </Text>
                     )}
                   </View>
@@ -842,6 +878,7 @@ export default function RefuelingsScreen() {
           onRequestClose={() => setDetailsModalVisible(false)}
         >
           <View style={styles.detailsModalOverlay}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setDetailsModalVisible(false)} />
             <View
               style={[
                 styles.detailsModalContent,
@@ -873,10 +910,28 @@ export default function RefuelingsScreen() {
                   </View>
 
                   <ScrollView
-                    style={{ flex: 1 }}
+                    style={styles.detailsScrollView}
                     contentContainerStyle={styles.detailsScrollContent}
                     showsVerticalScrollIndicator={false}
                   >
+                    {/* AVISO DE VEÍCULO COMPARTILHADO (QUANDO NÃO É PROPRIETÁRIO) */}
+                    {!isOwner && (
+                      <View
+                        style={[
+                          styles.sharedNoticeBox,
+                          {
+                            backgroundColor: isDark ? 'rgba(245, 158, 11, 0.12)' : '#FEF3C7',
+                            borderColor: isDark ? '#78350F' : '#FDE68A',
+                          },
+                        ]}
+                      >
+                        <Ionicons name="lock-closed" size={16} color="#D97706" />
+                        <Text style={[styles.sharedNoticeText, { color: isDark ? '#FDE68A' : '#92400E' }]}>
+                          Veículo compartilhado por {vehicle?.ownerEmail || 'proprietário'}. Apenas o proprietário pode editar ou excluir registros de abastecimento.
+                        </Text>
+                      </View>
+                    )}
+
                     {/* CARD: INFORMAÇÕES GERAIS */}
                     <View style={[styles.detailsSectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
                       <View style={styles.detailRow}>
@@ -891,7 +946,7 @@ export default function RefuelingsScreen() {
                           ]}
                         >
                           <Text style={[styles.fuelBadgeText, { color: getFuelBadgeColor(selectedRefuelingDetails.fuelType) }]}>
-                            {selectedRefuelingDetails.fuelType.toUpperCase()}
+                            {(selectedRefuelingDetails.fuelType || 'gasolina').toUpperCase()}
                           </Text>
                         </View>
                       </View>
@@ -925,7 +980,7 @@ export default function RefuelingsScreen() {
                           <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Valor Total:</Text>
                         </View>
                         <Text style={[styles.detailRowValue, { color: theme.accent, fontWeight: '800', fontSize: 16 }]}>
-                          R$ {selectedRefuelingDetails.totalAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          R$ {Number(selectedRefuelingDetails.totalAmount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </Text>
                       </View>
 
@@ -935,7 +990,7 @@ export default function RefuelingsScreen() {
                           <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Quantidade:</Text>
                         </View>
                         <Text style={[styles.detailRowValue, { color: theme.text }]}>
-                          {selectedRefuelingDetails.liters.toFixed(2)} L
+                          {Number(selectedRefuelingDetails.liters || 0).toFixed(2)} L
                         </Text>
                       </View>
 
@@ -945,7 +1000,7 @@ export default function RefuelingsScreen() {
                           <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Preço por Litro:</Text>
                         </View>
                         <Text style={[styles.detailRowValue, { color: theme.text }]}>
-                          R$ {selectedRefuelingDetails.pricePerLiter.toFixed(2)} / L
+                          R$ {Number(selectedRefuelingDetails.pricePerLiter || 0).toFixed(2)} / L
                         </Text>
                       </View>
                     </View>
@@ -958,7 +1013,7 @@ export default function RefuelingsScreen() {
                           <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Quilometragem:</Text>
                         </View>
                         <Text style={[styles.detailRowValue, { color: theme.text, fontWeight: '700' }]}>
-                          {selectedRefuelingDetails.odometer.toLocaleString('pt-BR')} km
+                          {Number(selectedRefuelingDetails.odometer || 0).toLocaleString('pt-BR')} km
                         </Text>
                       </View>
 
@@ -969,7 +1024,7 @@ export default function RefuelingsScreen() {
                             <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Km Anterior:</Text>
                           </View>
                           <Text style={[styles.detailRowValue, { color: theme.text }]}>
-                            {selectedRefuelingDetails.previousOdometer.toLocaleString('pt-BR')} km
+                            {Number(selectedRefuelingDetails.previousOdometer).toLocaleString('pt-BR')} km
                           </Text>
                         </View>
                       )}
@@ -981,7 +1036,7 @@ export default function RefuelingsScreen() {
                             <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Distância Rodada:</Text>
                           </View>
                           <Text style={[styles.detailRowValue, { color: theme.accent, fontWeight: '700' }]}>
-                            +{selectedRefuelingDetails.distanceTraveled.toLocaleString('pt-BR')} km
+                            +{Number(selectedRefuelingDetails.distanceTraveled).toLocaleString('pt-BR')} km
                           </Text>
                         </View>
                       )}
@@ -993,7 +1048,7 @@ export default function RefuelingsScreen() {
                             <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Média de Consumo:</Text>
                           </View>
                           <Text style={[styles.detailRowValue, { color: theme.accent, fontWeight: '800' }]}>
-                            {selectedRefuelingDetails.consumptionKmPerLiter} km/L
+                            {Number(selectedRefuelingDetails.consumptionKmPerLiter).toFixed(2)} km/L
                           </Text>
                         </View>
                       ) : null}
@@ -1005,7 +1060,7 @@ export default function RefuelingsScreen() {
                             <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Custo por Km:</Text>
                           </View>
                           <Text style={[styles.detailRowValue, { color: theme.blue, fontWeight: '700' }]}>
-                            R$ {selectedRefuelingDetails.costPerKm.toFixed(2)}/km
+                            R$ {Number(selectedRefuelingDetails.costPerKm).toFixed(2)}/km
                           </Text>
                         </View>
                       ) : null}
@@ -1042,34 +1097,45 @@ export default function RefuelingsScreen() {
 
                   {/* AÇÕES FIXAS NO RODAPÉ DO MODAL */}
                   <View style={[styles.detailsActionsRow, { borderTopColor: theme.cardBorder }]}>
-                    <TouchableOpacity
-                      style={[
-                        styles.deleteDetailBtn,
-                        { borderColor: isDark ? '#7F1D1D' : '#FCA5A5' },
-                      ]}
-                      onPress={() => handleDelete(selectedRefuelingDetails.id)}
-                    >
-                      <Ionicons name="trash-outline" size={16} color="#EF4444" />
-                      <Text style={[styles.deleteDetailBtnText, { color: '#EF4444' }]}>Excluir</Text>
-                    </TouchableOpacity>
+                    {isOwner ? (
+                      <>
+                        <TouchableOpacity
+                          style={[
+                            styles.deleteDetailBtn,
+                            { borderColor: isDark ? '#7F1D1D' : '#FCA5A5' },
+                          ]}
+                          onPress={() => handleDelete(selectedRefuelingDetails.id)}
+                        >
+                          <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                          <Text style={[styles.deleteDetailBtnText, { color: '#EF4444' }]}>Excluir</Text>
+                        </TouchableOpacity>
 
-                    <TouchableOpacity
-                      style={[
-                        styles.editDetailBtn,
-                        { borderColor: theme.cardBorder, backgroundColor: theme.bg },
-                      ]}
-                      onPress={() => handleEditRefueling(selectedRefuelingDetails)}
-                    >
-                      <Ionicons name="create-outline" size={16} color={theme.blue} />
-                      <Text style={[styles.editDetailBtnText, { color: theme.blue }]}>Editar</Text>
-                    </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[
+                            styles.editDetailBtn,
+                            { borderColor: theme.cardBorder, backgroundColor: theme.bg },
+                          ]}
+                          onPress={() => handleEditRefueling(selectedRefuelingDetails)}
+                        >
+                          <Ionicons name="create-outline" size={16} color={theme.blue} />
+                          <Text style={[styles.editDetailBtnText, { color: theme.blue }]}>Editar</Text>
+                        </TouchableOpacity>
 
-                    <TouchableOpacity
-                      style={[styles.closeDetailBtn, { backgroundColor: theme.accent, flex: 1 }]}
-                      onPress={() => setDetailsModalVisible(false)}
-                    >
-                      <Text style={styles.closeDetailBtnText}>Fechar</Text>
-                    </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.closeDetailBtn, { backgroundColor: theme.accent, flex: 1 }]}
+                          onPress={() => setDetailsModalVisible(false)}
+                        >
+                          <Text style={styles.closeDetailBtnText}>Fechar</Text>
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <TouchableOpacity
+                        style={[styles.closeDetailBtn, { backgroundColor: theme.accent, flex: 1 }]}
+                        onPress={() => setDetailsModalVisible(false)}
+                      >
+                        <Text style={styles.closeDetailBtnText}>Fechar</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </>
               )}
@@ -1797,13 +1863,32 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   detailsModalContent: {
-    maxHeight: '90%',
+    height: '84%',
+    maxHeight: '92%',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     borderWidth: 1,
     borderBottomWidth: 0,
     paddingHorizontal: 20,
     paddingTop: 18,
+    flexDirection: 'column',
+  },
+  detailsScrollView: {
+    flex: 1,
+  },
+  sharedNoticeBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  sharedNoticeText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 16,
   },
   detailsModalHeader: {
     flexDirection: 'row',
