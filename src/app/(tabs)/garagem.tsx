@@ -1,31 +1,34 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import {
-  StyleSheet,
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  Modal,
-  TextInput,
-  Alert,
-  ActivityIndicator,
-  RefreshControl,
-  ScrollView,
-  Image,
-  KeyboardAvoidingView,
-  Keyboard,
-  Platform,
-  Pressable,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect, router } from 'expo-router';
-import { StorageService } from '@/services/storage';
+import { ElectricityTariffModal } from '@/components/ElectricityTariffModal';
+import { FuelTypeDropdownSelector } from '@/components/FuelTypeDropdownSelector';
 import { useAuth } from '@/context/auth-context';
 import { useAppTheme } from '@/context/theme-context';
-import { Vehicle, FuelType, VehicleType } from '@/types/vehicle';
-import { formatEngineDisplacement, parseEngineDisplacement } from '@/utils/engine';
 import { pickAndOptimizeImage, promptImageSource } from '@/services/image-picker';
+import { StorageService } from '@/services/storage';
+import { FuelType, Vehicle, VehicleType } from '@/types/vehicle';
+import { formatEngineDisplacement, parseEngineDisplacement } from '@/utils/engine';
+import { isElectricVehicle, isHybridVehicle, normalizePlate } from '@/utils/vehicle-type';
+import { Ionicons } from '@expo/vector-icons';
+import { router, useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export function formatPlate(text: string): string {
   // Converte para maiúsculo, remove tudo que não for alfanumérico e limita a 7 caracteres
@@ -35,13 +38,6 @@ export function formatPlate(text: string): string {
   }
   return raw;
 }
-
-const FUEL_OPTIONS: { type: FuelType; label: string }[] = [
-  { type: 'gasolina', label: 'Gasolina' },
-  { type: 'etanol', label: 'Etanol' },
-  { type: 'diesel', label: 'Diesel' },
-  { type: 'gnv', label: 'GNV' },
-];
 
 export default function GarageScreen() {
   const { isDark } = useAppTheme();
@@ -64,9 +60,12 @@ export default function GarageScreen() {
   const [currentOdometer, setCurrentOdometer] = useState('');
   const [acceptedFuels, setAcceptedFuels] = useState<FuelType[]>(['gasolina', 'etanol']);
   const [engineDisplacement, setEngineDisplacement] = useState('');
+  const [consumptionUnit, setConsumptionUnit] = useState<'kwh_100km' | 'km_kwh'>('kwh_100km');
+  const [showTariffModal, setShowTariffModal] = useState(false);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoLoading, setPhotoLoading] = useState(false);
   const previewDisplacement = parseEngineDisplacement(engineDisplacement);
+  const isFormElectric = isElectricVehicle(acceptedFuels);
 
   // Controle de teclado e foco para manter campos visíveis
   const [keyboardVisible, setKeyboardVisible] = useState(false);
@@ -153,6 +152,7 @@ export default function GarageScreen() {
     setTankCapacity('50');
     setCurrentOdometer('');
     setEngineDisplacement('');
+    setConsumptionUnit('kwh_100km');
     setAcceptedFuels(['gasolina', 'etanol']);
     setPhotoUrl(null);
     setModalVisible(true);
@@ -172,19 +172,6 @@ export default function GarageScreen() {
     }
   };
 
-  const toggleFuel = (type: FuelType) => {
-    setAcceptedFuels((prev) => {
-      if (prev.includes(type)) {
-        if (prev.length === 1) {
-          Alert.alert('Combustível Obrigatório', 'Selecione ao menos um tipo de combustível que o veículo aceita.');
-          return prev;
-        }
-        return prev.filter((item) => item !== type);
-      }
-      return [...prev, type];
-    });
-  };
-
   const handleSave = async () => {
     if (saving) return;
 
@@ -201,14 +188,31 @@ export default function GarageScreen() {
       return;
     }
 
+    const formattedPlate = formatPlate(plate);
+    const norm = normalizePlate(formattedPlate);
+    if (norm && vehicles.some((v) => normalizePlate(v.plate) === norm)) {
+      Alert.alert(
+        'Veículo Já Cadastrado',
+        `Já existe um veículo cadastrado com a placa ${formattedPlate} na sua garagem.`
+      );
+      return;
+    }
+
     setSaving(true);
     try {
+      const isElectric = isElectricVehicle(acceptedFuels);
+      const isHybrid = isHybridVehicle(acceptedFuels);
+
       const odomNum = parseInt(currentOdometer, 10) || 0;
       const yearNum = parseInt(year, 10) || new Date().getFullYear();
-      const tankNum = parseInt(tankCapacity, 10) || (vehicleType === 'moto' ? 14 : 50);
-      const dispNum = parseEngineDisplacement(engineDisplacement);
+      const tankNum = isElectric
+        ? (parseFloat(tankCapacity.replace(',', '.')) || 60)
+        : (parseInt(tankCapacity, 10) || (vehicleType === 'moto' ? 14 : 50));
+      const dispNum = isElectric ? undefined : parseEngineDisplacement(engineDisplacement);
+      const declaredConsump = isElectric
+        ? (parseFloat(engineDisplacement.replace(',', '.')) || undefined)
+        : undefined;
 
-      const formattedPlate = formatPlate(plate);
       const newVeh: Vehicle = {
         id: 'veh-' + Date.now(),
         name: name.trim(),
@@ -217,6 +221,11 @@ export default function GarageScreen() {
         plate: formattedPlate,
         year: yearNum,
         tankCapacity: tankNum,
+        batteryCapacity: isElectric ? tankNum : undefined,
+        declaredConsumption: declaredConsump,
+        consumptionUnit: isElectric ? consumptionUnit : undefined,
+        isElectric,
+        isHybrid,
         currentOdometer: odomNum,
         fuelType: acceptedFuels[0] || 'gasolina',
         acceptedFuelTypes: acceptedFuels,
@@ -233,6 +242,10 @@ export default function GarageScreen() {
 
       setModalVisible(false);
       await loadData();
+
+      if (isElectric) {
+        setShowTariffModal(true);
+      }
     } catch (err) {
       console.error('Erro ao salvar veículo:', err);
       Alert.alert('Erro', 'Ocorreu um erro ao cadastrar o veículo. Tente novamente.');
@@ -269,7 +282,7 @@ export default function GarageScreen() {
             onPress={handleOpenAdd}
           >
             <Ionicons name="add" size={20} color="#FFFFFF" />
-            <Text style={styles.addBtnText}>+ Veículo</Text>
+            <Text style={styles.addBtnText}> Veículo</Text>
           </TouchableOpacity>
         </View>
 
@@ -409,7 +422,7 @@ export default function GarageScreen() {
                           </View>
                         </View>
                         <Text style={[styles.carModel, { color: theme.textMuted }]} numberOfLines={1}>
-                          {displayBrandModel} • {item.year} {item.engineDisplacement ? `• ${formatEngineDisplacement(item.engineDisplacement)}` : ''}
+                          {displayBrandModel} • {item.year} {isElectricVehicle(item) ? '• 100% Elétrico' : isHybridVehicle(item) ? (item.engineDisplacement ? `• ${formatEngineDisplacement(item.engineDisplacement)} (Híbrido)` : '• Híbrido') : item.engineDisplacement ? `• ${formatEngineDisplacement(item.engineDisplacement)}` : ''}
                         </Text>
                       </View>
                     </View>
@@ -500,14 +513,24 @@ export default function GarageScreen() {
                     </View>
 
                     <View style={styles.detailItem}>
-                      <Ionicons name="water-outline" size={16} color={theme.textMuted} />
+                      <Ionicons
+                        name={isElectricVehicle(item) ? 'battery-charging' : 'water-outline'}
+                        size={16}
+                        color={isElectricVehicle(item) ? '#06B6D4' : theme.textMuted}
+                      />
                       <Text style={[styles.detailText, { color: theme.text }]}>
-                        Tanque: {item.tankCapacity}L
+                        {isElectricVehicle(item)
+                          ? `Bateria: ${item.batteryCapacity || item.tankCapacity} kWh`
+                          : `Tanque: ${item.tankCapacity}L`}
                       </Text>
                     </View>
 
                     <View style={styles.detailItem}>
-                      <Ionicons name="flame-outline" size={16} color={theme.textMuted} />
+                      <Ionicons
+                        name={isElectricVehicle(item) ? 'flash' : 'flame-outline'}
+                        size={16}
+                        color={isElectricVehicle(item) ? '#06B6D4' : theme.textMuted}
+                      />
                       <Text style={[styles.detailText, { color: theme.text, textTransform: 'capitalize' }]}>
                         {fuelsDisplay}
                       </Text>
@@ -522,7 +545,7 @@ export default function GarageScreen() {
                         {item.proxRevKm
                           ? `Próx. Revisão: ${item.proxRevKm.toLocaleString('pt-BR')} km`
                           : `Revisão a cada ${item.revisaoKm?.toLocaleString('pt-BR')} km`}
-                        {item.proxTrocaOleoKm
+                        {!isElectricVehicle(item) && item.proxTrocaOleoKm
                           ? ` • Próx. Óleo: ${item.proxTrocaOleoKm.toLocaleString('pt-BR')} km`
                           : ''}
                       </Text>
@@ -750,6 +773,24 @@ export default function GarageScreen() {
                   </TouchableOpacity>
                 </View>
 
+                {/* SELETOR SUSPENSO VERTICAL DE COMBUSTÍVEIS */}
+                <FuelTypeDropdownSelector
+                  selectedFuels={acceptedFuels}
+                  onChange={(fuels) => {
+                    setAcceptedFuels(fuels);
+                    if (isElectricVehicle(fuels)) {
+                      if (tankCapacity === '50' || tankCapacity === '14') {
+                        setTankCapacity('60');
+                      }
+                    } else {
+                      if (tankCapacity === '60') {
+                        setTankCapacity(vehicleType === 'moto' ? '14' : '50');
+                      }
+                    }
+                  }}
+                  disabled={saving}
+                />
+
                 {/* MARCA E MODELO */}
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
@@ -828,7 +869,7 @@ export default function GarageScreen() {
                   </View>
                 </View>
 
-                {/* ODÔMETRO E CAPACIDADE DO TANQUE */}
+                {/* ODÔMETRO E CAPACIDADE DO TANQUE / BATERIA */}
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <View style={[styles.inputGroup, { flex: 1 }]}>
                     <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Odômetro Atual (km):</Text>
@@ -844,93 +885,119 @@ export default function GarageScreen() {
                   </View>
 
                   <View style={[styles.inputGroup, { flex: 1 }]}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Tanque (Litros):</Text>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                      {isFormElectric ? 'Bateria (kWh):' : 'Tanque (Litros):'}
+                    </Text>
                     <TextInput
                       style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
-                      keyboardType="numeric"
+                      keyboardType="decimal-pad"
                       value={tankCapacity}
                       onChangeText={setTankCapacity}
                       onFocus={() => scrollToInput(250)}
-                      placeholder={vehicleType === 'moto' ? '14' : '50'}
+                      placeholder={isFormElectric ? 'Ex: 60' : (vehicleType === 'moto' ? '14' : '50')}
                       placeholderTextColor={theme.textMuted}
                     />
                   </View>
                 </View>
 
-                {/* CILINDRADA / MOTOR (CARROS E MOTOS) */}
-                <View style={styles.inputGroup}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
-                      Cilindrada / Motor:
-                    </Text>
-                    {previewDisplacement ? (
-                      <View style={[styles.dispPreviewBadge, { backgroundColor: theme.accentLight }]}>
-                        <Text style={[styles.dispPreviewText, { color: theme.accent }]}>
-                          Salvará: {previewDisplacement}cc
-                        </Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  <TextInput
-                    style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
-                    keyboardType="decimal-pad"
-                    value={engineDisplacement}
-                    onChangeText={setEngineDisplacement}
-                    onFocus={() => scrollToInput(320)}
-                    placeholder={
-                      vehicleType === 'moto'
-                        ? 'Ex: 160, 250 ou 1000'
-                        : 'Ex: 1.0, 1.6, 1.8 ou 1000, 1600'
-                    }
-                    placeholderTextColor={theme.textMuted}
-                  />
-                  <Text style={[styles.inputHint, { color: theme.textMuted }]}>
-                    {vehicleType === 'moto'
-                      ? 'Aceita cilindradas em cc (ex: 160, 250, 1000).'
-                      : 'Aceita em litros (ex: 1.0, 1.6, 1.8) ou cilindradas (ex: 1000, 1600, 1800).'}
-                  </Text>
-                </View>
-
-                {/* COMBUSTÍVEIS ACEITOS (CHECKBOX) */}
-                <View style={styles.inputGroup}>
-                  <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
-                    Combustíveis Aceitos pelo Veículo:
-                  </Text>
-                  <View style={styles.fuelOptionsRow}>
-                    {FUEL_OPTIONS.map((opt) => {
-                      const isSelected = acceptedFuels.includes(opt.type);
-                      return (
+                {/* CILINDRADA OU CONSUMO MÉDIO INFORMADO */}
+                {isFormElectric ? (
+                  <View style={styles.inputGroup}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                        Consumo Médio Informado:
+                      </Text>
+                      <View style={{ flexDirection: 'row', gap: 4 }}>
                         <TouchableOpacity
-                          key={opt.type}
                           style={[
-                            styles.fuelOptionChip,
+                            styles.unitToggleBtn,
                             {
-                              backgroundColor: isSelected
-                                ? (isDark ? 'rgba(16, 185, 129, 0.2)' : 'rgba(16, 185, 129, 0.12)')
-                                : theme.bg,
-                              borderColor: isSelected ? theme.accent : theme.cardBorder,
+                              backgroundColor: consumptionUnit === 'kwh_100km' ? theme.accent : theme.bg,
+                              borderColor: theme.cardBorder,
                             },
                           ]}
-                          onPress={() => toggleFuel(opt.type)}
+                          onPress={() => setConsumptionUnit('kwh_100km')}
                         >
-                          <Ionicons
-                            name={isSelected ? 'checkbox' : 'square-outline'}
-                            size={18}
-                            color={isSelected ? theme.accent : theme.textMuted}
-                          />
                           <Text
                             style={[
-                              styles.fuelOptionText,
-                              { color: isSelected ? theme.accent : theme.text },
+                              styles.unitToggleText,
+                              { color: consumptionUnit === 'kwh_100km' ? '#FFFFFF' : theme.textMuted },
                             ]}
                           >
-                            {opt.label}
+                            kWh/100km
                           </Text>
                         </TouchableOpacity>
-                      );
-                    })}
+
+                        <TouchableOpacity
+                          style={[
+                            styles.unitToggleBtn,
+                            {
+                              backgroundColor: consumptionUnit === 'km_kwh' ? theme.accent : theme.bg,
+                              borderColor: theme.cardBorder,
+                            },
+                          ]}
+                          onPress={() => setConsumptionUnit('km_kwh')}
+                        >
+                          <Text
+                            style={[
+                              styles.unitToggleText,
+                              { color: consumptionUnit === 'km_kwh' ? '#FFFFFF' : theme.textMuted },
+                            ]}
+                          >
+                            km/kWh
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                    <TextInput
+                      style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                      keyboardType="decimal-pad"
+                      value={engineDisplacement}
+                      onChangeText={setEngineDisplacement}
+                      onFocus={() => scrollToInput(320)}
+                      placeholder={consumptionUnit === 'kwh_100km' ? 'Ex: 15.5' : 'Ex: 6.5'}
+                      placeholderTextColor={theme.textMuted}
+                    />
+                    <Text style={[styles.inputHint, { color: theme.textMuted }]}>
+                      {consumptionUnit === 'kwh_100km'
+                        ? 'Consumo médio esperado da montadora em kWh a cada 100 km rodados.'
+                        : 'Eficiência esperada da montadora em quilômetros por cada 1 kWh de energia.'}
+                    </Text>
                   </View>
-                </View>
+                ) : (
+                  <View style={styles.inputGroup}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                        Cilindrada / Motor:
+                      </Text>
+                      {previewDisplacement ? (
+                        <View style={[styles.dispPreviewBadge, { backgroundColor: theme.accentLight }]}>
+                          <Text style={[styles.dispPreviewText, { color: theme.accent }]}>
+                            Salvará: {previewDisplacement}cc
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <TextInput
+                      style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                      keyboardType="decimal-pad"
+                      value={engineDisplacement}
+                      onChangeText={setEngineDisplacement}
+                      onFocus={() => scrollToInput(320)}
+                      placeholder={
+                        vehicleType === 'moto'
+                          ? 'Ex: 160, 250 ou 1000'
+                          : 'Ex: 1.0, 1.6, 1.8 ou 1000, 1600'
+                      }
+                      placeholderTextColor={theme.textMuted}
+                    />
+                    <Text style={[styles.inputHint, { color: theme.textMuted }]}>
+                      {vehicleType === 'moto'
+                        ? 'Aceita cilindradas em cc (ex: 160, 250, 1000).'
+                        : 'Aceita em litros (ex: 1.0, 1.6, 1.8) ou cilindradas (ex: 1000, 1600, 1800).'}
+                    </Text>
+                  </View>
+                )}
 
                 <TouchableOpacity
                   style={[
@@ -961,6 +1028,13 @@ export default function GarageScreen() {
             </View>
           </KeyboardAvoidingView>
         </Modal>
+
+        {/* MODAL DE CONFIGURAÇÃO DE TARIFA DE ENERGIA */}
+        <ElectricityTariffModal
+          visible={showTariffModal}
+          allowSkip={true}
+          onClose={() => setShowTariffModal(false)}
+        />
       </View>
     </SafeAreaView>
   );
@@ -1187,6 +1261,16 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   dispPreviewText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  unitToggleBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  unitToggleText: {
     fontSize: 11,
     fontWeight: '700',
   },

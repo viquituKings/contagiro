@@ -3,6 +3,7 @@ import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
 import { Vehicle, Refueling, MaintenanceItem } from '@/types/vehicle';
 import { formatEngineDisplacement } from '@/utils/engine';
+import { isElectricVehicle } from '@/utils/vehicle-type';
 import { getAvatarCacheMap } from '@/services/image-picker';
 import { APP_ICON_BASE64 } from '@/constants/app-icon';
 
@@ -854,14 +855,23 @@ export async function generateVehicleReportHtml(params: {
       </div>
 
       <div class="cadastral-item">
-        <div class="cadastral-label">Capacidade do Tanque</div>
-        <div class="cadastral-value">${vehicle.tankCapacity} Litros</div>
+        <div class="cadastral-label">${isElectricVehicle(vehicle) ? 'Capacidade da Bateria' : 'Capacidade do Tanque'}</div>
+        <div class="cadastral-value">${isElectricVehicle(vehicle) ? `${vehicle.batteryCapacity || vehicle.tankCapacity} kWh` : `${vehicle.tankCapacity} Litros`}</div>
       </div>
 
+      ${
+        isElectricVehicle(vehicle)
+          ? `
+      <div class="cadastral-item">
+        <div class="cadastral-label">Consumo Médio Informado</div>
+        <div class="cadastral-value">${vehicle.declaredConsumption ? `${vehicle.declaredConsumption} ${vehicle.consumptionUnit === 'km_kwh' ? 'km/kWh' : 'kWh/100km'}` : '100% Elétrico'}</div>
+      </div>`
+          : `
       <div class="cadastral-item">
         <div class="cadastral-label">Motorização / Cilindrada</div>
         <div class="cadastral-value">${vehicle.engineDisplacement ? formatEngineDisplacement(vehicle.engineDisplacement) : '--'}</div>
-      </div>
+      </div>`
+      }
 
       <div class="cadastral-item">
         <div class="cadastral-label">Combustíveis Aceitos</div>
@@ -894,8 +904,9 @@ export async function generateVehicleReportHtml(params: {
       <div class="periodic-banner">
         <div><strong>🛡️ Plano de Manutenção Periódica:</strong> Ativo na Oficina</div>
         <div>
-          ${vehicle.proxRevKm ? `<span>Próx. Revisão: <strong>${vehicle.proxRevKm.toLocaleString('pt-BR')} km</strong></span> • ` : ''}
-          ${vehicle.proxTrocaOleoKm ? `<span>Próx. Óleo: <strong>${vehicle.proxTrocaOleoKm.toLocaleString('pt-BR')} km</strong></span>` : ''}
+          ${vehicle.proxRevKm ? `<span>Próx. Revisão: <strong>${vehicle.proxRevKm.toLocaleString('pt-BR')} km</strong></span>` : ''}
+          ${!isElectricVehicle(vehicle) && vehicle.proxTrocaOleoKm ? ` • <span>Próx. Óleo: <strong>${vehicle.proxTrocaOleoKm.toLocaleString('pt-BR')} km</strong></span>` : ''}
+          ${vehicle.customPeriodicMaintenances && vehicle.customPeriodicMaintenances.length > 0 ? vehicle.customPeriodicMaintenances.map(c => ` • <span>Próx. ${c.title}: <strong>${c.nextDueKm ? `${c.nextDueKm.toLocaleString('pt-BR')} km` : `A cada ${c.intervalKm.toLocaleString('pt-BR')} km`}</strong></span>`).join('') : ''}
         </div>
       </div>
       `

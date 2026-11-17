@@ -1,7 +1,9 @@
 import { auth } from '@/services/firebase';
 import { StorageService } from '@/services/storage';
-import { FuelType, Refueling, Vehicle } from '@/types/vehicle';
+import { ElectricityTariff, FuelType, RechargeType, Refueling, Vehicle } from '@/types/vehicle';
 import { compareDatesDesc, formatDateToBR } from '@/utils/date';
+import { calculateResidentialRecharge, isElectricVehicle } from '@/utils/vehicle-type';
+import { ElectricityTariffModal } from '@/components/ElectricityTariffModal';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from 'expo-router';
@@ -56,7 +58,10 @@ export default function RefuelingsScreen() {
     ? (!vehicle.isShared || (Boolean(ownerEmail) && currentUserEmail === ownerEmail))
     : true;
 
-  // Formulário de Abastecimento
+  // Identificação do tipo de propulsão
+  const isElectric = isElectricVehicle(vehicle);
+
+  // Formulário de Abastecimento / Recarga
   const [odometer, setOdometer] = useState('');
   const [fuelType, setFuelType] = useState<FuelType>('gasolina');
   const [pricePerLiter, setPricePerLiter] = useState('');
@@ -67,6 +72,15 @@ export default function RefuelingsScreen() {
   const [notes, setNotes] = useState('');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // Estados específicos para Veículos Elétricos
+  const [rechargeType, setRechargeType] = useState<RechargeType>('residencial');
+  const [batteryInitialPercent, setBatteryInitialPercent] = useState('20');
+  const [batteryFinalPercent, setBatteryFinalPercent] = useState('80');
+  const [kwh, setKwh] = useState('');
+  const [pricePerKwh, setPricePerKwh] = useState('');
+  const [userTariff, setUserTariff] = useState<ElectricityTariff | null>(null);
+  const [showTariffModal, setShowTariffModal] = useState(false);
 
   // Controle de teclado e foco para manter campos visíveis
   const [keyboardVisible, setKeyboardVisible] = useState(false);
@@ -112,6 +126,16 @@ export default function RefuelingsScreen() {
     return `${day}/${month}/${year}${isToday ? ' (Hoje)' : ''}`;
   };
 
+  const loadTariff = async () => {
+    try {
+      const tariff = await StorageService.getElectricityTariff();
+      setUserTariff(tariff);
+      return tariff;
+    } catch {
+      return null;
+    }
+  };
+
   const loadData = async (isPull = false) => {
     if (isPull) setRefreshing(true);
     else setLoading(true);
@@ -119,14 +143,20 @@ export default function RefuelingsScreen() {
       const allVehicles = await StorageService.getVehicles();
       setVehicles(allVehicles);
 
-      const curVehicle = await StorageService.getActiveVehicle();
+      const [curVehicle, tariff] = await Promise.all([
+        StorageService.getActiveVehicle(),
+        StorageService.getElectricityTariff(),
+      ]);
       setVehicle(curVehicle);
+      setUserTariff(tariff);
 
       if (curVehicle) {
         const list = await StorageService.getRefuelings(curVehicle.id);
         setRefuelings(list);
         setOdometer(String(curVehicle.currentOdometer));
-        if (curVehicle.acceptedFuelTypes && curVehicle.acceptedFuelTypes.length > 0) {
+        if (isElectricVehicle(curVehicle)) {
+          setFuelType('eletrico');
+        } else if (curVehicle.acceptedFuelTypes && curVehicle.acceptedFuelTypes.length > 0) {
           setFuelType(curVehicle.acceptedFuelTypes[0]);
         }
       } else {
@@ -154,7 +184,9 @@ export default function RefuelingsScreen() {
     setIsSwitchingVehicle(true);
     setVehicle(veh);
     setOdometer(String(veh.currentOdometer));
-    if (veh.acceptedFuelTypes && veh.acceptedFuelTypes.length > 0) {
+    if (isElectricVehicle(veh)) {
+      setFuelType('eletrico');
+    } else if (veh.acceptedFuelTypes && veh.acceptedFuelTypes.length > 0) {
       setFuelType(veh.acceptedFuelTypes[0]);
     }
     setRefuelings([]);
@@ -174,7 +206,56 @@ export default function RefuelingsScreen() {
     }
   };
 
-  // Cálculo dinâmico entre Litros e Valor Total ao digitar
+  // Cálculo de Recarga Residencial em tempo real
+  const residentialCalculation = useMemo(() => {
+    if (!isElectric || rechargeType !== 'residencial') return null;
+    const initPct = parseFloat(batteryInitialPercent.replace(',', '.')) || 0;
+    const finalPct = parseFloat(batteryFinalPercent.replace(',', '.')) || 0;
+    const batteryCap = vehicle?.batteryCapacity || vehicle?.tankCapacity || 60;
+    const tariffRate = userTariff?.kwhRate || 0.85;
+    return calculateResidentialRecharge(batteryCap, initPct, finalPct, tariffRate);
+  }, [isElectric, rechargeType, batteryInitialPercent, batteryFinalPercent, vehicle, userTariff]);
+
+  // Cálculo dinâmico para Eletropostos (kWh, Preço/kWh e Total Pago calculam-se mutuamente)
+  const handleElectricKwhChange = (val: string) => {
+    setKwh(val);
+    setLiters(val);
+    const k = parseFloat(val.replace(',', '.'));
+    const p = parseFloat(pricePerKwh.replace(',', '.'));
+    const t = parseFloat(totalAmount.replace(',', '.'));
+    if (!isNaN(k) && k > 0) {
+      if (!isNaN(p) && p > 0) {
+        setTotalAmount((k * p).toFixed(2).replace('.', ','));
+      } else if (!isNaN(t) && t > 0) {
+        const calcPrice = (t / k).toFixed(2).replace('.', ',');
+        setPricePerKwh(calcPrice);
+        setPricePerLiter(calcPrice);
+      }
+    }
+  };
+
+  const handleElectricPriceChange = (val: string) => {
+    setPricePerKwh(val);
+    setPricePerLiter(val);
+    const p = parseFloat(val.replace(',', '.'));
+    const k = parseFloat(kwh.replace(',', '.'));
+    if (!isNaN(p) && p > 0 && !isNaN(k) && k > 0) {
+      setTotalAmount((k * p).toFixed(2).replace('.', ','));
+    }
+  };
+
+  const handleElectricTotalChange = (val: string) => {
+    setTotalAmount(val);
+    const t = parseFloat(val.replace(',', '.'));
+    const k = parseFloat(kwh.replace(',', '.'));
+    if (!isNaN(t) && t > 0 && !isNaN(k) && k > 0) {
+      const calcPrice = (t / k).toFixed(2).replace('.', ',');
+      setPricePerKwh(calcPrice);
+      setPricePerLiter(calcPrice);
+    }
+  };
+
+  // Cálculo dinâmico entre Litros e Valor Total ao digitar (veículos a combustão)
   const handlePriceChange = (val: string) => {
     setPricePerLiter(val);
     const p = parseFloat(val.replace(',', '.'));
@@ -206,12 +287,13 @@ export default function RefuelingsScreen() {
     setFuelType(f);
     try {
       const prices = await StorageService.getLatestFuelPrices();
-      if (prices && prices[f] > 0) {
-        setPricePerLiter(prices[f].toFixed(2).replace('.', ','));
+      const p = prices ? prices[f] : undefined;
+      if (typeof p === 'number' && p > 0) {
+        setPricePerLiter(p.toFixed(2).replace('.', ','));
         if (totalAmount) {
           const tot = parseFloat(totalAmount.replace(',', '.'));
           if (tot > 0) {
-            setLiters((tot / prices[f]).toFixed(2).replace('.', ','));
+            setLiters((tot / p).toFixed(2).replace('.', ','));
           }
         }
       }
@@ -237,7 +319,17 @@ export default function RefuelingsScreen() {
     setDetailsModalVisible(false);
     setEditingRefuelingId(item.id);
     setOdometer(String(item.odometer || ''));
-    setFuelType(item.fuelType || 'gasolina');
+    const isItemElectric = item.fuelType === 'eletrico' || Boolean(item.rechargeType);
+    setFuelType(item.fuelType || (isItemElectric ? 'eletrico' : 'gasolina'));
+    setRechargeType(item.rechargeType || 'residencial');
+    setBatteryInitialPercent(item.batteryInitialPercent != null ? String(item.batteryInitialPercent) : '20');
+    setBatteryFinalPercent(item.batteryFinalPercent != null ? String(item.batteryFinalPercent) : '80');
+    setKwh(item.kwh != null ? String(item.kwh) : (item.liters != null ? String(item.liters) : ''));
+    setPricePerKwh(
+      item.pricePerKwh != null
+        ? Number(item.pricePerKwh).toFixed(2).replace('.', ',')
+        : (item.pricePerLiter != null ? Number(item.pricePerLiter).toFixed(2).replace('.', ',') : '')
+    );
     setPricePerLiter(item.pricePerLiter ? Number(item.pricePerLiter).toFixed(2).replace('.', ',') : '');
     setTotalAmount(item.totalAmount ? Number(item.totalAmount).toFixed(2).replace('.', ',') : '');
     setLiters(item.liters ? Number(item.liters).toFixed(2).replace('.', ',') : '');
@@ -264,27 +356,45 @@ export default function RefuelingsScreen() {
     }
     setEditingRefuelingId(null);
     setOdometer(String(vehicle.currentOdometer || ''));
-    const initialFuel =
-      vehicle.acceptedFuelTypes && vehicle.acceptedFuelTypes.length > 0
-        ? vehicle.acceptedFuelTypes[0]
-        : 'gasolina';
-    setFuelType(initialFuel);
 
-    try {
-      const prices = await StorageService.getLatestFuelPrices();
-      if (prices && prices[initialFuel] > 0) {
-        setPricePerLiter(prices[initialFuel].toFixed(2).replace('.', ','));
-      } else {
+    if (isElectricVehicle(vehicle)) {
+      setFuelType('eletrico');
+      setRechargeType('residencial');
+      setBatteryInitialPercent('20');
+      setBatteryFinalPercent('80');
+      setKwh('');
+      const defaultRate = userTariff?.kwhRate ? userTariff.kwhRate.toFixed(2).replace('.', ',') : '';
+      setPricePerKwh(defaultRate);
+      setPricePerLiter(defaultRate);
+      setTotalAmount('');
+      setLiters('');
+      setIsFullTank(true);
+      setIsAdditivated(false);
+    } else {
+      const initialFuel =
+        vehicle.acceptedFuelTypes && vehicle.acceptedFuelTypes.length > 0
+          ? vehicle.acceptedFuelTypes[0]
+          : 'gasolina';
+      setFuelType(initialFuel);
+
+      try {
+        const prices = await StorageService.getLatestFuelPrices();
+        const p = prices ? prices[initialFuel] : undefined;
+        if (typeof p === 'number' && p > 0) {
+          setPricePerLiter(p.toFixed(2).replace('.', ','));
+        } else {
+          setPricePerLiter('');
+        }
+      } catch {
         setPricePerLiter('');
       }
-    } catch {
-      setPricePerLiter('');
+
+      setTotalAmount('');
+      setLiters('');
+      setIsFullTank(true);
+      setIsAdditivated(false);
     }
 
-    setTotalAmount('');
-    setLiters('');
-    setIsFullTank(true);
-    setIsAdditivated(false);
     setNotes('');
     setSelectedDate(new Date());
     setShowDatePicker(false);
@@ -360,14 +470,168 @@ export default function RefuelingsScreen() {
     if (!vehicle || saving) return;
 
     const odomNum = parseInt(odometer, 10);
-    const priceNum = parseFloat(pricePerLiter.replace(',', '.'));
-    const totalNum = parseFloat(totalAmount.replace(',', '.'));
-    const litersNum = parseFloat(liters.replace(',', '.'));
-
     if (isNaN(odomNum) || odomNum <= 0) {
       Alert.alert('Erro', 'Insira uma quilometragem válida.');
       return;
     }
+
+    if (isElectricVehicle(vehicle)) {
+      if (rechargeType === 'residencial') {
+        const initPct = parseFloat(batteryInitialPercent.replace(',', '.'));
+        const finalPct = parseFloat(batteryFinalPercent.replace(',', '.'));
+
+        if (isNaN(initPct) || initPct < 0 || initPct > 100) {
+          Alert.alert('Erro', 'Informe uma porcentagem inicial válida entre 0 e 100%.');
+          return;
+        }
+        if (isNaN(finalPct) || finalPct < 0 || finalPct > 100) {
+          Alert.alert('Erro', 'Informe uma porcentagem final válida entre 0 e 100%.');
+          return;
+        }
+        if (finalPct <= initPct) {
+          Alert.alert('Erro', 'A porcentagem final da bateria deve ser maior que a inicial.');
+          return;
+        }
+
+        const batteryCap = vehicle.batteryCapacity || vehicle.tankCapacity || 60;
+        const tariffRate = userTariff?.kwhRate || 0.85;
+        const calc = calculateResidentialRecharge(batteryCap, initPct, finalPct, tariffRate);
+
+        const executeSaveResidential = async () => {
+          setSaving(true);
+          try {
+            const userAttribution = auth.currentUser?.displayName || auth.currentUser?.email || undefined;
+            const newRef: Refueling = {
+              id: editingRefuelingId || ('ref-' + Date.now()),
+              vehicleId: vehicle.id,
+              plate: vehicle.plate,
+              date: getLocalDateString(selectedDate),
+              odometer: odomNum,
+              fuelType: 'eletrico',
+              rechargeType: 'residencial',
+              batteryInitialPercent: initPct,
+              batteryFinalPercent: finalPct,
+              netEnergy: calc.netEnergy,
+              grossEnergy: calc.grossEnergy,
+              energyTariff: tariffRate,
+              pricePerKwh: tariffRate,
+              pricePerLiter: tariffRate,
+              kwh: calc.grossEnergy,
+              liters: calc.grossEnergy,
+              totalAmount: calc.totalCost,
+              isFullTank: finalPct >= 99 || isFullTank,
+              isAdditivated: false,
+              notes: notes.trim() || undefined,
+              gasStation: 'Recarga Residencial',
+              registeredBy: editingRefuelingId
+                ? selectedRefuelingDetails?.registeredBy
+                : userAttribution,
+            };
+
+            await StorageService.addRefueling(newRef);
+            setModalVisible(false);
+            setEditingRefuelingId(null);
+            await loadData();
+          } catch (err) {
+            console.error('Erro ao salvar recarga residencial:', err);
+            Alert.alert('Erro', 'Ocorreu um erro ao salvar a recarga residencial.');
+          } finally {
+            setSaving(false);
+          }
+        };
+
+        if (!editingRefuelingId && odomNum < vehicle.currentOdometer) {
+          Alert.alert(
+            'Atenção',
+            `A quilometragem informada (${odomNum} km) é menor que a atual (${vehicle.currentOdometer} km). Deseja continuar?`,
+            [
+              { text: 'Corrigir', style: 'cancel' },
+              { text: 'Continuar', onPress: executeSaveResidential },
+            ]
+          );
+          return;
+        }
+
+        await executeSaveResidential();
+        return;
+      } else {
+        // Eletroposto
+        const kwhNum = parseFloat(kwh.replace(',', '.'));
+        const priceNum = parseFloat(pricePerKwh.replace(',', '.'));
+        const totalNum = parseFloat(totalAmount.replace(',', '.'));
+
+        if (isNaN(kwhNum) || kwhNum <= 0) {
+          Alert.alert('Erro', 'Insira a quantidade de kWh recarregados.');
+          return;
+        }
+        if (isNaN(priceNum) || priceNum <= 0) {
+          Alert.alert('Erro', 'Insira o valor por kWh.');
+          return;
+        }
+        if (isNaN(totalNum) || totalNum <= 0) {
+          Alert.alert('Erro', 'Insira o valor total pago.');
+          return;
+        }
+
+        const executeSaveEletroposto = async () => {
+          setSaving(true);
+          try {
+            const userAttribution = auth.currentUser?.displayName || auth.currentUser?.email || undefined;
+            const newRef: Refueling = {
+              id: editingRefuelingId || ('ref-' + Date.now()),
+              vehicleId: vehicle.id,
+              plate: vehicle.plate,
+              date: getLocalDateString(selectedDate),
+              odometer: odomNum,
+              fuelType: 'eletrico',
+              rechargeType: 'eletroposto',
+              kwh: kwhNum,
+              liters: kwhNum,
+              pricePerKwh: priceNum,
+              pricePerLiter: priceNum,
+              totalAmount: totalNum,
+              isFullTank,
+              isAdditivated: false,
+              notes: notes.trim() || undefined,
+              gasStation: notes.trim() || undefined,
+              registeredBy: editingRefuelingId
+                ? selectedRefuelingDetails?.registeredBy
+                : userAttribution,
+            };
+
+            await StorageService.addRefueling(newRef);
+            setModalVisible(false);
+            setEditingRefuelingId(null);
+            await loadData();
+          } catch (err) {
+            console.error('Erro ao salvar recarga em eletroposto:', err);
+            Alert.alert('Erro', 'Ocorreu um erro ao salvar a recarga.');
+          } finally {
+            setSaving(false);
+          }
+        };
+
+        if (!editingRefuelingId && odomNum < vehicle.currentOdometer) {
+          Alert.alert(
+            'Atenção',
+            `A quilometragem informada (${odomNum} km) é menor que a atual (${vehicle.currentOdometer} km). Deseja continuar?`,
+            [
+              { text: 'Corrigir', style: 'cancel' },
+              { text: 'Continuar', onPress: executeSaveEletroposto },
+            ]
+          );
+          return;
+        }
+
+        await executeSaveEletroposto();
+        return;
+      }
+    }
+
+    const priceNum = parseFloat(pricePerLiter.replace(',', '.'));
+    const totalNum = parseFloat(totalAmount.replace(',', '.'));
+    const litersNum = parseFloat(liters.replace(',', '.'));
+
     if (isNaN(priceNum) || priceNum <= 0) {
       Alert.alert('Erro', 'Insira um preço por litro válido.');
       return;
@@ -439,6 +703,8 @@ export default function RefuelingsScreen() {
         return '#3B82F6';
       case 'gnv':
         return '#8B5CF6';
+      case 'eletrico':
+        return '#06B6D4';
       default:
         return '#10B981';
     }
@@ -472,7 +738,9 @@ export default function RefuelingsScreen() {
         {/* HEADER */}
         <View style={styles.header}>
           <View>
-            <Text style={[styles.title, { color: theme.text }]}>Abastecimentos</Text>
+            <Text style={[styles.title, { color: theme.text }]}>
+              {isElectric ? 'Recargas' : 'Abastecimentos'}
+            </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
               <Text style={[styles.subtitle, { color: theme.textMuted }]}>
                 {vehicle ? `${vehicle.name} (${vehicle.plate})` : 'Nenhum veículo ativo'}
@@ -499,12 +767,12 @@ export default function RefuelingsScreen() {
             disabled={isSwitchingVehicle}
             style={[
               styles.addBtn,
-              { backgroundColor: theme.accent, opacity: isSwitchingVehicle ? 0.6 : 1 },
+              { backgroundColor: isElectric ? '#06B6D4' : theme.accent, opacity: isSwitchingVehicle ? 0.6 : 1 },
             ]}
             onPress={handleOpenModal}
           >
-            <Ionicons name="add" size={20} color="#FFFFFF" />
-            <Text style={styles.addBtnText}>Abastecer</Text>
+            <Ionicons name={isElectric ? 'flash' : 'add'} size={18} color="#FFFFFF" />
+            <Text style={styles.addBtnText}>{isElectric ? 'Recarregar' : 'Abastecer'}</Text>
           </TouchableOpacity>
         </View>
 
@@ -691,10 +959,12 @@ export default function RefuelingsScreen() {
             <View style={styles.kpiItem}>
               <Text style={[styles.kpiLabel, { color: theme.textMuted }]}>Média Geral</Text>
               <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 2 }}>
-                <Text style={[styles.kpiValue, { color: theme.accent }]}>
+                <Text style={[styles.kpiValue, { color: isElectric ? '#06B6D4' : theme.accent }]}>
                   {avgConsumption ?? '--'}
                 </Text>
-                <Text style={[styles.kpiUnit, { color: theme.textMuted }]}>km/L</Text>
+                <Text style={[styles.kpiUnit, { color: theme.textMuted }]}>
+                  {isElectric ? 'km/kWh' : 'km/L'}
+                </Text>
               </View>
             </View>
 
@@ -710,12 +980,16 @@ export default function RefuelingsScreen() {
             <View style={[styles.kpiDivider, { backgroundColor: theme.cardBorder }]} />
 
             <View style={styles.kpiItem}>
-              <Text style={[styles.kpiLabel, { color: theme.textMuted }]}>Total Litros</Text>
+              <Text style={[styles.kpiLabel, { color: theme.textMuted }]}>
+                {isElectric ? 'Total Energia' : 'Total Litros'}
+              </Text>
               <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 2 }}>
                 <Text style={[styles.kpiValue, { color: theme.text }]}>
                   {totalLiters.toFixed(0)}
                 </Text>
-                <Text style={[styles.kpiUnit, { color: theme.textMuted }]}>L</Text>
+                <Text style={[styles.kpiUnit, { color: theme.textMuted }]}>
+                  {isElectric ? 'kWh' : 'L'}
+                </Text>
               </View>
             </View>
           </View>
@@ -730,16 +1004,16 @@ export default function RefuelingsScreen() {
             <Text style={[styles.loadingTitle, { color: theme.text }]}>
               {isSwitchingVehicle
                 ? `Carregando dados de ${vehicle?.name || 'veículo'}...`
-                : 'Carregando abastecimentos...'}
+                : (isElectric ? 'Carregando recargas...' : 'Carregando abastecimentos...')}
             </Text>
             <Text style={[styles.loadingSubtitle, { color: theme.textMuted }]}>
               {isSwitchingVehicle
-                ? 'Aguarde enquanto os abastecimentos e médias estão sendo preparados.'
+                ? 'Aguarde enquanto os registros e médias estão sendo preparados.'
                 : 'Sincronizando com o banco de dados...'}
             </Text>
           </View>
         ) : (
-          /* LISTA DE ABASTECIMENTOS */
+          /* LISTA DE ABASTECIMENTOS / RECARGAS */
           <FlatList
             data={sortedRefuelings}
             keyExtractor={(item) => item.id}
@@ -755,10 +1029,14 @@ export default function RefuelingsScreen() {
             }
             ListEmptyComponent={
               <View style={[styles.emptyContainer, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-                <Ionicons name="water-outline" size={48} color={theme.textMuted} />
-                <Text style={[styles.emptyTitle, { color: theme.text }]}>Nenhum abastecimento encontrado</Text>
+                <Ionicons name={isElectric ? 'flash-outline' : 'water-outline'} size={48} color={theme.textMuted} />
+                <Text style={[styles.emptyTitle, { color: theme.text }]}>
+                  {isElectric ? 'Nenhuma recarga encontrada' : 'Nenhum abastecimento encontrado'}
+                </Text>
                 <Text style={[styles.emptySubtitle, { color: theme.textMuted }]}>
-                  {'Toque no botão "+ Abastecer" acima para registrar seu primeiro abastecimento.'}
+                  {isElectric
+                    ? 'Toque no botão "+ Recarregar" acima para registrar sua primeira recarga.'
+                    : 'Toque no botão "+ Abastecer" acima para registrar seu primeiro abastecimento.'}
                 </Text>
               </View>
             }
@@ -786,6 +1064,28 @@ export default function RefuelingsScreen() {
                       </Text>
                     </View>
 
+                    {item.fuelType === 'eletrico' && item.rechargeType && (
+                      <View
+                        style={[
+                          styles.additivatedBadge,
+                          {
+                            backgroundColor: isDark ? 'rgba(6, 182, 212, 0.15)' : '#ECFEFF',
+                            borderColor: isDark ? 'rgba(6, 182, 212, 0.3)' : '#A5F3FC',
+                            borderWidth: 1,
+                          },
+                        ]}
+                      >
+                        <Ionicons
+                          name={item.rechargeType === 'residencial' ? 'home-outline' : 'flash-outline'}
+                          size={11}
+                          color="#06B6D4"
+                        />
+                        <Text style={[styles.additivatedText, { color: '#06B6D4' }]}>
+                          {item.rechargeType === 'residencial' ? 'Residencial' : 'Eletroposto'}
+                        </Text>
+                      </View>
+                    )}
+
                     {item.isAdditivated && (
                       <View style={[styles.additivatedBadge, { backgroundColor: isDark ? 'rgba(59, 130, 246, 0.15)' : '#EFF6FF' }]}>
                         <Ionicons name="flash" size={11} color="#3B82F6" />
@@ -798,7 +1098,9 @@ export default function RefuelingsScreen() {
                     {item.isFullTank && (
                       <View style={styles.fullTankBadge}>
                         <Ionicons name="checkmark-circle" size={11} color="#10B981" />
-                        <Text style={styles.fullTankText}>Tanque Cheio</Text>
+                        <Text style={styles.fullTankText}>
+                          {item.fuelType === 'eletrico' ? 'Bateria 100%' : 'Tanque Cheio'}
+                        </Text>
                       </View>
                     )}
                   </View>
@@ -821,15 +1123,22 @@ export default function RefuelingsScreen() {
                     <Text style={[styles.totalAmount, { color: theme.text }]}>
                       R$ {Number(item.totalAmount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </Text>
-                    <Text style={[styles.litersAndPrice, { color: theme.textMuted }]}>
-                      {Number(item.liters || 0).toFixed(2)} L × R$ {Number(item.pricePerLiter || 0).toFixed(2)}/L
-                    </Text>
+                    {item.fuelType === 'eletrico' ? (
+                      <Text style={[styles.litersAndPrice, { color: theme.textMuted }]}>
+                        {Number(item.kwh || item.liters || 0).toFixed(2)} kWh × R$ {Number(item.pricePerKwh || item.pricePerLiter || 0).toFixed(2)}/kWh
+                      </Text>
+                    ) : (
+                      <Text style={[styles.litersAndPrice, { color: theme.textMuted }]}>
+                        {Number(item.liters || 0).toFixed(2)} L × R$ {Number(item.pricePerLiter || 0).toFixed(2)}/L
+                      </Text>
+                    )}
                   </View>
 
                   {item.consumptionKmPerLiter ? (
                     <View style={styles.consumptionBox}>
                       <Text style={[styles.consumptionValue, { color: theme.accent }]}>
-                        {Number(item.consumptionKmPerLiter).toFixed(2)} <Text style={{ fontSize: 11 }}>km/L</Text>
+                        {Number(item.consumptionKmPerLiter).toFixed(2)}{' '}
+                        <Text style={{ fontSize: 11 }}>{item.fuelType === 'eletrico' ? 'km/kWh' : 'km/L'}</Text>
                       </Text>
                       {item.costPerKm && (
                         <Text style={[styles.costPerKmText, { color: theme.textMuted }]}>
@@ -840,7 +1149,11 @@ export default function RefuelingsScreen() {
                   ) : (
                     <View style={styles.noCalcBox}>
                       <Text style={[styles.noCalcText, { color: theme.textMuted }]}>
-                        {item.isFullTank ? 'Tanque Base' : 'Parcial'}
+                        {item.fuelType === 'eletrico'
+                          ? (item.rechargeType === 'residencial' && item.batteryInitialPercent != null && item.batteryFinalPercent != null
+                            ? `${item.batteryInitialPercent}% → ${item.batteryFinalPercent}%`
+                            : (item.isFullTank ? 'Carga 100%' : 'Parcial'))
+                          : (item.isFullTank ? 'Tanque Base' : 'Parcial')}
                       </Text>
                     </View>
                   )}
@@ -936,8 +1249,14 @@ export default function RefuelingsScreen() {
                     <View style={[styles.detailsSectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
                       <View style={styles.detailRow}>
                         <View style={styles.detailRowLeft}>
-                          <Ionicons name="flame-outline" size={16} color={getFuelBadgeColor(selectedRefuelingDetails.fuelType)} />
-                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Combustível:</Text>
+                          <Ionicons
+                            name={selectedRefuelingDetails.fuelType === 'eletrico' ? 'flash-outline' : 'flame-outline'}
+                            size={16}
+                            color={getFuelBadgeColor(selectedRefuelingDetails.fuelType)}
+                          />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>
+                            {selectedRefuelingDetails.fuelType === 'eletrico' ? 'Energia / Combustível:' : 'Combustível:'}
+                          </Text>
                         </View>
                         <View
                           style={[
@@ -951,28 +1270,110 @@ export default function RefuelingsScreen() {
                         </View>
                       </View>
 
-                      <View style={styles.detailRow}>
-                        <View style={styles.detailRowLeft}>
-                          <Ionicons name="flash-outline" size={16} color="#3B82F6" />
-                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Aditivado:</Text>
+                      {selectedRefuelingDetails.fuelType === 'eletrico' && selectedRefuelingDetails.rechargeType && (
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons
+                              name={selectedRefuelingDetails.rechargeType === 'residencial' ? 'home-outline' : 'business-outline'}
+                              size={16}
+                              color="#06B6D4"
+                            />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Tipo de Recarga:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: '#06B6D4', fontWeight: '700' }]}>
+                            {selectedRefuelingDetails.rechargeType === 'residencial'
+                              ? 'Carregamento Residencial'
+                              : 'Eletroposto (Comercial)'}
+                          </Text>
                         </View>
-                        <Text style={[styles.detailRowValue, { color: selectedRefuelingDetails.isAdditivated ? '#3B82F6' : theme.text }]}>
-                          {selectedRefuelingDetails.isAdditivated ? 'Sim' : 'Não'}
-                        </Text>
-                      </View>
+                      )}
+
+                      {selectedRefuelingDetails.isAdditivated && (
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="flash-outline" size={16} color="#3B82F6" />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Aditivado:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: '#3B82F6' }]}>
+                            Sim
+                          </Text>
+                        </View>
+                      )}
 
                       <View style={styles.detailRow}>
                         <View style={styles.detailRowLeft}>
-                          <Ionicons name="water-outline" size={16} color="#10B981" />
-                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Status do Tanque:</Text>
+                          <Ionicons
+                            name={selectedRefuelingDetails.fuelType === 'eletrico' ? 'battery-charging-outline' : 'water-outline'}
+                            size={16}
+                            color="#10B981"
+                          />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>
+                            {selectedRefuelingDetails.fuelType === 'eletrico' ? 'Status da Bateria:' : 'Status do Tanque:'}
+                          </Text>
                         </View>
                         <Text style={[styles.detailRowValue, { color: selectedRefuelingDetails.isFullTank ? '#10B981' : theme.text }]}>
-                          {selectedRefuelingDetails.isFullTank ? 'Tanque Cheio' : 'Abastecimento Parcial'}
+                          {selectedRefuelingDetails.fuelType === 'eletrico'
+                            ? (selectedRefuelingDetails.isFullTank ? 'Bateria 100% (Cheia)' : 'Recarga Parcial')
+                            : (selectedRefuelingDetails.isFullTank ? 'Tanque Cheio' : 'Abastecimento Parcial')}
                         </Text>
                       </View>
                     </View>
 
-                    {/* CARD: VALORES E VOLUME */}
+                    {/* CARD ESPECÍFICO: RECARGA RESIDENCIAL */}
+                    {selectedRefuelingDetails.fuelType === 'eletrico' && selectedRefuelingDetails.rechargeType === 'residencial' && (
+                      <View style={[styles.detailsSectionCard, { backgroundColor: isDark ? 'rgba(6, 182, 212, 0.08)' : '#ECFEFF', borderColor: isDark ? 'rgba(6, 182, 212, 0.25)' : '#BAE6FD' }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                          <Ionicons name="calculator-outline" size={16} color="#06B6D4" />
+                          <Text style={[styles.detailsSectionTitle, { color: isDark ? '#38BDF8' : '#0284C7' }]}>
+                            Detalhamento do Cálculo Residencial
+                          </Text>
+                        </View>
+
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="battery-half-outline" size={16} color="#06B6D4" />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Carga da Bateria:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.text, fontWeight: '700' }]}>
+                            {selectedRefuelingDetails.batteryInitialPercent ?? '--'}% → {selectedRefuelingDetails.batteryFinalPercent ?? '--'}%
+                          </Text>
+                        </View>
+
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="flash-outline" size={16} color="#06B6D4" />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Energia Líquida (Bateria):</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.text }]}>
+                            {selectedRefuelingDetails.netEnergy != null ? `${selectedRefuelingDetails.netEnergy.toFixed(2)} kWh` : '--'}
+                          </Text>
+                        </View>
+
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="trending-down-outline" size={16} color="#06B6D4" />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Perda de Eficiência (+12%):</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.text }]}>
+                            {selectedRefuelingDetails.grossEnergy != null && selectedRefuelingDetails.netEnergy != null
+                              ? `+${(selectedRefuelingDetails.grossEnergy - selectedRefuelingDetails.netEnergy).toFixed(2)} kWh`
+                              : '--'}
+                          </Text>
+                        </View>
+
+                        <View style={styles.detailRow}>
+                          <View style={styles.detailRowLeft}>
+                            <Ionicons name="receipt-outline" size={16} color="#06B6D4" />
+                            <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Tarifa de Energia Utilizada:</Text>
+                          </View>
+                          <Text style={[styles.detailRowValue, { color: theme.text }]}>
+                            R$ {Number(selectedRefuelingDetails.energyTariff || selectedRefuelingDetails.pricePerKwh || selectedRefuelingDetails.pricePerLiter || 0).toFixed(2)} / kWh
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* CARD: VALORES E VOLUME / ENERGIA */}
                     <View style={[styles.detailsSectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
                       <View style={styles.detailRow}>
                         <View style={styles.detailRowLeft}>
@@ -986,21 +1387,31 @@ export default function RefuelingsScreen() {
 
                       <View style={styles.detailRow}>
                         <View style={styles.detailRowLeft}>
-                          <Ionicons name="color-fill-outline" size={16} color={theme.blue} />
-                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Quantidade:</Text>
+                          <Ionicons
+                            name={selectedRefuelingDetails.fuelType === 'eletrico' ? 'flash-outline' : 'color-fill-outline'}
+                            size={16}
+                            color={theme.blue}
+                          />
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>
+                            {selectedRefuelingDetails.fuelType === 'eletrico' ? 'Energia Faturada:' : 'Quantidade:'}
+                          </Text>
                         </View>
                         <Text style={[styles.detailRowValue, { color: theme.text }]}>
-                          {Number(selectedRefuelingDetails.liters || 0).toFixed(2)} L
+                          {Number(selectedRefuelingDetails.kwh || selectedRefuelingDetails.liters || 0).toFixed(2)}{' '}
+                          {selectedRefuelingDetails.fuelType === 'eletrico' ? 'kWh' : 'L'}
                         </Text>
                       </View>
 
                       <View style={styles.detailRow}>
                         <View style={styles.detailRowLeft}>
                           <Ionicons name="pricetag-outline" size={16} color={theme.textMuted} />
-                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Preço por Litro:</Text>
+                          <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>
+                            {selectedRefuelingDetails.fuelType === 'eletrico' ? 'Preço por kWh:' : 'Preço por Litro:'}
+                          </Text>
                         </View>
                         <Text style={[styles.detailRowValue, { color: theme.text }]}>
-                          R$ {Number(selectedRefuelingDetails.pricePerLiter || 0).toFixed(2)} / L
+                          R$ {Number(selectedRefuelingDetails.pricePerKwh || selectedRefuelingDetails.pricePerLiter || 0).toFixed(2)}{' '}
+                          / {selectedRefuelingDetails.fuelType === 'eletrico' ? 'kWh' : 'L'}
                         </Text>
                       </View>
                     </View>
@@ -1048,7 +1459,8 @@ export default function RefuelingsScreen() {
                             <Text style={[styles.detailRowLabel, { color: theme.textMuted }]}>Média de Consumo:</Text>
                           </View>
                           <Text style={[styles.detailRowValue, { color: theme.accent, fontWeight: '800' }]}>
-                            {Number(selectedRefuelingDetails.consumptionKmPerLiter).toFixed(2)} km/L
+                            {Number(selectedRefuelingDetails.consumptionKmPerLiter).toFixed(2)}{' '}
+                            {selectedRefuelingDetails.fuelType === 'eletrico' ? 'km/kWh' : 'km/L'}
                           </Text>
                         </View>
                       ) : null}
@@ -1180,7 +1592,9 @@ export default function RefuelingsScreen() {
               <View style={styles.modalHeader}>
                 <View>
                   <Text style={[styles.modalTitle, { color: theme.text }]}>
-                    {editingRefuelingId ? 'Editar Abastecimento' : 'Novo Abastecimento'}
+                    {isElectric
+                      ? (editingRefuelingId ? 'Editar Recarga' : 'Nova Recarga Elétrica')
+                      : (editingRefuelingId ? 'Editar Abastecimento' : 'Novo Abastecimento')}
                   </Text>
                   <Text style={[styles.modalSubtitle, { color: theme.textMuted }]}>
                     {vehicle?.name} ({vehicle?.plate})
@@ -1205,44 +1619,105 @@ export default function RefuelingsScreen() {
                   paddingBottom: keyboardVisible ? 140 : 30,
                 }}
               >
-                {/* SELETOR DE COMBUSTÍVEL (LIMITADO AOS ACEITOS PELO VEÍCULO) */}
-                <View style={styles.inputGroup}>
-                  <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
-                    Combustível Aceito:
-                  </Text>
-                  <View style={styles.fuelSelector}>
-                    {availableFuels.map((f) => {
-                      const isSelected = fuelType === f;
-                      return (
-                        <TouchableOpacity
-                          key={f}
+                {/* MODO DE RECARGA (ELÉTRICO) OU SELETOR DE COMBUSTÍVEL (COMBUSTÃO) */}
+                {isElectric ? (
+                  <View style={styles.inputGroup}>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                      Tipo de Recarga:
+                    </Text>
+                    <View style={styles.electricTypeSelectorRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.electricTypeBtn,
+                          {
+                            backgroundColor: rechargeType === 'residencial' ? '#06B6D4' : theme.bg,
+                            borderColor: rechargeType === 'residencial' ? '#06B6D4' : theme.cardBorder,
+                          },
+                        ]}
+                        onPress={() => setRechargeType('residencial')}
+                      >
+                        <Ionicons
+                          name="home"
+                          size={16}
+                          color={rechargeType === 'residencial' ? '#FFFFFF' : theme.textMuted}
+                        />
+                        <Text
                           style={[
-                            styles.fuelOption,
-                            {
-                              backgroundColor: isSelected ? theme.accent : theme.bg,
-                              borderColor: isSelected ? theme.accent : theme.cardBorder,
-                            },
+                            styles.electricTypeBtnText,
+                            { color: rechargeType === 'residencial' ? '#FFFFFF' : theme.text },
                           ]}
-                          onPress={() => handleSelectFuelType(f)}
                         >
-                          <Text
-                            style={[
-                              styles.fuelOptionText,
-                              { color: isSelected ? '#FFFFFF' : theme.text },
-                            ]}
-                          >
-                            {f.toUpperCase()}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
+                          Residencial
+                        </Text>
+                      </TouchableOpacity>
 
-                {/* DATA (COM SELETOR DE DATA) E ODÔMETRO */}
+                      <TouchableOpacity
+                        style={[
+                          styles.electricTypeBtn,
+                          {
+                            backgroundColor: rechargeType === 'eletroposto' ? '#06B6D4' : theme.bg,
+                            borderColor: rechargeType === 'eletroposto' ? '#06B6D4' : theme.cardBorder,
+                          },
+                        ]}
+                        onPress={() => setRechargeType('eletroposto')}
+                      >
+                        <Ionicons
+                          name="flash"
+                          size={16}
+                          color={rechargeType === 'eletroposto' ? '#FFFFFF' : theme.textMuted}
+                        />
+                        <Text
+                          style={[
+                            styles.electricTypeBtnText,
+                            { color: rechargeType === 'eletroposto' ? '#FFFFFF' : theme.text },
+                          ]}
+                        >
+                          Eletroposto
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.inputGroup}>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                      Combustível Aceito:
+                    </Text>
+                    <View style={styles.fuelSelector}>
+                      {availableFuels.map((f) => {
+                        const isSelected = fuelType === f;
+                        return (
+                          <TouchableOpacity
+                            key={f}
+                            style={[
+                              styles.fuelOption,
+                              {
+                                backgroundColor: isSelected ? theme.accent : theme.bg,
+                                borderColor: isSelected ? theme.accent : theme.cardBorder,
+                              },
+                            ]}
+                            onPress={() => handleSelectFuelType(f)}
+                          >
+                            <Text
+                              style={[
+                                styles.fuelOptionText,
+                                { color: isSelected ? '#FFFFFF' : theme.text },
+                              ]}
+                            >
+                              {f.toUpperCase()}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
+
+                {/* DATA E ODÔMETRO */}
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <View style={[styles.inputGroup, { flex: 1.1 }]}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Data do Abastecimento:</Text>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                      {isElectric ? 'Data da Recarga:' : 'Data do Abastecimento:'}
+                    </Text>
                     <TouchableOpacity
                       style={[
                         styles.datePickerBtn,
@@ -1250,7 +1725,7 @@ export default function RefuelingsScreen() {
                       ]}
                       onPress={() => setShowDatePicker(true)}
                     >
-                      <Ionicons name="calendar-outline" size={17} color={theme.accent} />
+                      <Ionicons name="calendar-outline" size={17} color={isElectric ? '#06B6D4' : theme.accent} />
                       <Text style={[styles.datePickerBtnText, { color: theme.text }]}>
                         {formatDisplayDate(selectedDate)}
                       </Text>
@@ -1282,89 +1757,303 @@ export default function RefuelingsScreen() {
                   />
                 )}
 
-                {/* PREÇO E VALOR TOTAL */}
-                <View style={{ flexDirection: 'row', gap: 10 }}>
-                  <View style={[styles.inputGroup, { flex: 1 }]}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Preço / Litro (R$):</Text>
-                    <TextInput
-                      style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
-                      keyboardType="numeric"
-                      value={pricePerLiter}
-                      onChangeText={handlePriceChange}
-                      onFocus={() => scrollToInput(140)}
-                      placeholder="Ex: 5,89"
-                      placeholderTextColor={theme.textMuted}
-                    />
-                  </View>
+                {/* FORMULÁRIO ESPECÍFICO */}
+                {isElectric ? (
+                  rechargeType === 'residencial' ? (
+                    <>
+                      {/* BATERIA INICIAL E FINAL */}
+                      <View style={{ flexDirection: 'row', gap: 10 }}>
+                        <View style={[styles.inputGroup, { flex: 1 }]}>
+                          <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                            Bateria Inicial (%):
+                          </Text>
+                          <TextInput
+                            style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                            keyboardType="numeric"
+                            value={batteryInitialPercent}
+                            onChangeText={setBatteryInitialPercent}
+                            onFocus={() => scrollToInput(140)}
+                            placeholder="Ex: 20"
+                            placeholderTextColor={theme.textMuted}
+                          />
+                        </View>
 
-                  <View style={[styles.inputGroup, { flex: 1 }]}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Valor Total (R$):</Text>
-                    <TextInput
-                      style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
-                      keyboardType="numeric"
-                      value={totalAmount}
-                      onChangeText={handleTotalChange}
-                      onFocus={() => scrollToInput(140)}
-                      placeholder="Ex: 235,60"
-                      placeholderTextColor={theme.textMuted}
-                    />
-                  </View>
-                </View>
+                        <View style={[styles.inputGroup, { flex: 1 }]}>
+                          <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                            Bateria Final (%):
+                          </Text>
+                          <TextInput
+                            style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                            keyboardType="numeric"
+                            value={batteryFinalPercent}
+                            onChangeText={setBatteryFinalPercent}
+                            onFocus={() => scrollToInput(140)}
+                            placeholder="Ex: 80"
+                            placeholderTextColor={theme.textMuted}
+                          />
+                        </View>
+                      </View>
 
-                {/* LITROS E OBSERVAÇÕES */}
-                <View style={{ flexDirection: 'row', gap: 10 }}>
-                  <View style={[styles.inputGroup, { flex: 1 }]}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Litros Abastecidos:</Text>
-                    <TextInput
-                      style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
-                      keyboardType="numeric"
-                      value={liters}
-                      onChangeText={handleLitersChange}
-                      onFocus={() => scrollToInput(220)}
-                      placeholder="Ex: 40,00"
-                      placeholderTextColor={theme.textMuted}
-                    />
-                  </View>
+                      {/* CARD DE INFORMAÇÕES DA TARIFA */}
+                      <View
+                        style={[
+                          styles.tariffInfoCard,
+                          {
+                            backgroundColor: isDark ? 'rgba(6, 182, 212, 0.08)' : '#ECFEFF',
+                            borderColor: isDark ? 'rgba(6, 182, 212, 0.3)' : '#BAE6FD',
+                          },
+                        ]}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="receipt-outline" size={16} color="#06B6D4" />
+                            <Text style={[styles.tariffCardTitle, { color: isDark ? '#38BDF8' : '#0369A1' }]}>
+                              Tarifa Residencial:
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            onPress={() => setShowTariffModal(true)}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Text style={{ fontSize: 12, fontWeight: '700', color: '#06B6D4' }}>
+                              {userTariff ? 'Atualizar' : 'Configurar'}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                        <Text style={[styles.tariffCardText, { color: theme.text }]}>
+                          {userTariff
+                            ? `R$ ${userTariff.kwhRate.toFixed(2).replace('.', ',')} / kWh (Ref: ${userTariff.referenceMonth || 'Atual'})`
+                            : 'Usando tarifa média padrão (R$ 0,85/kWh). Toque em "Configurar" para inserir dados da sua conta.'}
+                        </Text>
+                      </View>
 
-                  <View style={[styles.inputGroup, { flex: 1.2 }]}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Observações (Opcional):</Text>
-                    <TextInput
-                      style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
-                      value={notes}
-                      onChangeText={setNotes}
-                      onFocus={() => scrollToInput(240)}
-                      placeholder="Ex: Posto Ipiranga, cidade..."
-                      placeholderTextColor={theme.textMuted}
-                    />
-                  </View>
-                </View>
+                      {/* CARD COM OS 3 PASSOS DE CÁLCULO */}
+                      {residentialCalculation && (
+                        <View
+                          style={[
+                            styles.stepsBox,
+                            {
+                              backgroundColor: isDark ? '#0F172A' : '#F1F5F9',
+                              borderColor: theme.cardBorder,
+                            },
+                          ]}
+                        >
+                          <Text style={[styles.stepsBoxTitle, { color: theme.text }]}>
+                            Cálculo da Recarga (Bateria: {vehicle?.batteryCapacity || vehicle?.tankCapacity || 60} kWh)
+                          </Text>
 
-                {/* SWITCHES TANQUE CHEIO E ADITIVADO */}
-                <View style={[styles.switchRow, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
-                  <View style={{ flex: 1, marginRight: 10 }}>
-                    <Text style={[styles.switchTitle, { color: theme.text }]}>Tanque Cheio?</Text>
-                    <Text style={[styles.switchDesc, { color: theme.textMuted }]}>
-                      Necessário para calcular a média de consumo (km/L).
-                    </Text>
-                  </View>
-                  <Switch
-                    value={isFullTank}
-                    onValueChange={setIsFullTank}
-                    trackColor={{ false: '#334155', true: theme.accent }}
-                  />
-                </View>
+                          {/* PASSO 1 */}
+                          <View style={styles.stepItemRow}>
+                            <View style={styles.stepBadge}>
+                              <Text style={styles.stepBadgeText}>1</Text>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.stepItemLabel, { color: theme.textMuted }]}>
+                                Energia Líquida (+{residentialCalculation.percentDiff}%):
+                              </Text>
+                              <Text style={[styles.stepItemFormula, { color: theme.textMuted }]}>
+                                (({batteryFinalPercent}% - {batteryInitialPercent}%) / 100) × {vehicle?.batteryCapacity || vehicle?.tankCapacity || 60} kWh
+                              </Text>
+                            </View>
+                            <Text style={[styles.stepItemValue, { color: theme.text }]}>
+                              {residentialCalculation.netEnergy} kWh
+                            </Text>
+                          </View>
 
-                <View style={[styles.switchRow, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
-                  <View style={{ flex: 1, marginRight: 10 }}>
-                    <Text style={[styles.switchTitle, { color: theme.text }]}>Combustível Aditivado?</Text>
-                    <Text style={[styles.switchDesc, { color: theme.textMuted }]}>
-                      Identifica uso de aditivos de limpeza e desempenho.
-                    </Text>
-                  </View>
-                  <Switch
-                    value={isAdditivated}
-                    onValueChange={setIsAdditivated}
-                    trackColor={{ false: '#334155', true: '#3B82F6' }}
+                          {/* PASSO 2 */}
+                          <View style={styles.stepItemRow}>
+                            <View style={styles.stepBadge}>
+                              <Text style={styles.stepBadgeText}>2</Text>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.stepItemLabel, { color: theme.textMuted }]}>
+                                Perda de Eficiência (+12%):
+                              </Text>
+                              <Text style={[styles.stepItemFormula, { color: theme.textMuted }]}>
+                                {residentialCalculation.netEnergy} kWh × 1,12 (rede elétrica)
+                              </Text>
+                            </View>
+                            <Text style={[styles.stepItemValue, { color: theme.text }]}>
+                              {residentialCalculation.grossEnergy} kWh
+                            </Text>
+                          </View>
+
+                          {/* PASSO 3 */}
+                          <View style={styles.stepItemRow}>
+                            <View style={[styles.stepBadge, { backgroundColor: '#10B981' }]}>
+                              <Text style={styles.stepBadgeText}>3</Text>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.stepItemLabel, { color: theme.textMuted }]}>
+                                Custo Total com a Tarifa:
+                              </Text>
+                              <Text style={[styles.stepItemFormula, { color: theme.textMuted }]}>
+                                {residentialCalculation.grossEnergy} kWh × R$ {(userTariff?.kwhRate || 0.85).toFixed(2)}/kWh
+                              </Text>
+                            </View>
+                            <Text style={[styles.stepItemValue, { color: theme.accent, fontWeight: '800', fontSize: 15 }]}>
+                              R$ {residentialCalculation.totalCost.toFixed(2).replace('.', ',')}
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+                    </>
+                  ) : (
+                    /* ELETROPOSTO (COMERCIAL) */
+                    <>
+                      <View style={{ flexDirection: 'row', gap: 10 }}>
+                        <View style={[styles.inputGroup, { flex: 1 }]}>
+                          <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                            kWh Recarregados:
+                          </Text>
+                          <TextInput
+                            style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                            keyboardType="numeric"
+                            value={kwh}
+                            onChangeText={handleElectricKwhChange}
+                            onFocus={() => scrollToInput(140)}
+                            placeholder="Ex: 35.5"
+                            placeholderTextColor={theme.textMuted}
+                          />
+                        </View>
+
+                        <View style={[styles.inputGroup, { flex: 1 }]}>
+                          <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                            Preço por kWh (R$):
+                          </Text>
+                          <TextInput
+                            style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                            keyboardType="numeric"
+                            value={pricePerKwh}
+                            onChangeText={handleElectricPriceChange}
+                            onFocus={() => scrollToInput(140)}
+                            placeholder="Ex: 2.40"
+                            placeholderTextColor={theme.textMuted}
+                          />
+                        </View>
+                      </View>
+
+                      <View style={styles.inputGroup}>
+                        <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                          Total Pago (R$):
+                        </Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                          keyboardType="numeric"
+                          value={totalAmount}
+                          onChangeText={handleElectricTotalChange}
+                          onFocus={() => scrollToInput(220)}
+                          placeholder="Ex: 85.20"
+                          placeholderTextColor={theme.textMuted}
+                        />
+                        <Text style={[styles.inputHint, { color: theme.textMuted }]}>
+                          Preço por kWh e Total Pago calculam automaticamente um ao outro.
+                        </Text>
+                      </View>
+
+                      {/* SWITCH CARGA 100% */}
+                      <View style={[styles.switchRow, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                        <View style={{ flex: 1, marginRight: 10 }}>
+                          <Text style={[styles.switchTitle, { color: theme.text }]}>Carga 100% (Bateria Cheia)?</Text>
+                          <Text style={[styles.switchDesc, { color: theme.textMuted }]}>
+                            Necessário para calcular a eficiência de consumo (km/kWh).
+                          </Text>
+                        </View>
+                        <Switch
+                          value={isFullTank}
+                          onValueChange={setIsFullTank}
+                          trackColor={{ false: '#334155', true: '#06B6D4' }}
+                        />
+                      </View>
+                    </>
+                  )
+                ) : (
+                  /* COMBUSTÃO / HÍBRIDO (CAMPOS ORIGINAIS) */
+                  <>
+                    {/* PREÇO E VALOR TOTAL */}
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <View style={[styles.inputGroup, { flex: 1 }]}>
+                        <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Preço / Litro (R$):</Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                          keyboardType="numeric"
+                          value={pricePerLiter}
+                          onChangeText={handlePriceChange}
+                          onFocus={() => scrollToInput(140)}
+                          placeholder="Ex: 5,89"
+                          placeholderTextColor={theme.textMuted}
+                        />
+                      </View>
+
+                      <View style={[styles.inputGroup, { flex: 1 }]}>
+                        <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Valor Total (R$):</Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                          keyboardType="numeric"
+                          value={totalAmount}
+                          onChangeText={handleTotalChange}
+                          onFocus={() => scrollToInput(140)}
+                          placeholder="Ex: 235,60"
+                          placeholderTextColor={theme.textMuted}
+                        />
+                      </View>
+                    </View>
+
+                    {/* LITROS */}
+                    <View style={styles.inputGroup}>
+                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Litros Abastecidos:</Text>
+                      <TextInput
+                        style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                        keyboardType="numeric"
+                        value={liters}
+                        onChangeText={handleLitersChange}
+                        onFocus={() => scrollToInput(220)}
+                        placeholder="Ex: 40,00"
+                        placeholderTextColor={theme.textMuted}
+                      />
+                    </View>
+
+                    {/* SWITCHES TANQUE CHEIO E ADITIVADO */}
+                    <View style={[styles.switchRow, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                      <View style={{ flex: 1, marginRight: 10 }}>
+                        <Text style={[styles.switchTitle, { color: theme.text }]}>Tanque Cheio?</Text>
+                        <Text style={[styles.switchDesc, { color: theme.textMuted }]}>
+                          Necessário para calcular a média de consumo (km/L).
+                        </Text>
+                      </View>
+                      <Switch
+                        value={isFullTank}
+                        onValueChange={setIsFullTank}
+                        trackColor={{ false: '#334155', true: theme.accent }}
+                      />
+                    </View>
+
+                    <View style={[styles.switchRow, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                      <View style={{ flex: 1, marginRight: 10 }}>
+                        <Text style={[styles.switchTitle, { color: theme.text }]}>Combustível Aditivado?</Text>
+                        <Text style={[styles.switchDesc, { color: theme.textMuted }]}>
+                          Identifica uso de aditivos de limpeza e desempenho.
+                        </Text>
+                      </View>
+                      <Switch
+                        value={isAdditivated}
+                        onValueChange={setIsAdditivated}
+                        trackColor={{ false: '#334155', true: '#3B82F6' }}
+                      />
+                    </View>
+                  </>
+                )}
+
+                {/* OBSERVAÇÕES */}
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Observações (Opcional):</Text>
+                  <TextInput
+                    style={[styles.input, { backgroundColor: theme.bg, color: theme.text, borderColor: theme.cardBorder }]}
+                    value={notes}
+                    onChangeText={setNotes}
+                    onFocus={() => scrollToInput(300)}
+                    placeholder={isElectric ? 'Ex: Wallbox residencial, Eletroposto Graal...' : 'Ex: Posto Ipiranga, cidade...'}
+                    placeholderTextColor={theme.textMuted}
                   />
                 </View>
 
@@ -1372,7 +2061,7 @@ export default function RefuelingsScreen() {
                   style={[
                     styles.saveBtn,
                     {
-                      backgroundColor: theme.accent,
+                      backgroundColor: isElectric ? '#06B6D4' : theme.accent,
                       opacity: saving ? 0.7 : 1,
                       flexDirection: 'row',
                       alignItems: 'center',
@@ -1388,12 +2077,16 @@ export default function RefuelingsScreen() {
                     <>
                       <ActivityIndicator size="small" color="#FFFFFF" />
                       <Text style={styles.saveBtnText}>
-                        {editingRefuelingId ? 'Atualizando...' : 'Salvando Abastecimento...'}
+                        {editingRefuelingId
+                          ? (isElectric ? 'Atualizando Recarga...' : 'Atualizando Abastecimento...')
+                          : (isElectric ? 'Salvando Recarga...' : 'Salvando Abastecimento...')}
                       </Text>
                     </>
                   ) : (
                     <Text style={styles.saveBtnText}>
-                      {editingRefuelingId ? 'Atualizar Abastecimento' : 'Salvar Abastecimento'}
+                      {editingRefuelingId
+                        ? (isElectric ? 'Atualizar Recarga' : 'Atualizar Abastecimento')
+                        : (isElectric ? 'Salvar Recarga' : 'Salvar Abastecimento')}
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -1401,6 +2094,16 @@ export default function RefuelingsScreen() {
             </View>
           </KeyboardAvoidingView>
         </Modal>
+
+        {/* MODAL: TARIFA DE ENERGIA ELÉTRICA */}
+        <ElectricityTariffModal
+          visible={showTariffModal}
+          allowSkip={true}
+          onClose={() => {
+            setShowTariffModal(false);
+            loadTariff();
+          }}
+        />
       </View>
     </SafeAreaView>
   );
@@ -1995,5 +2698,85 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
+  },
+  electricTypeSelectorRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  electricTypeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  electricTypeBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  tariffInfoCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    gap: 6,
+  },
+  tariffCardTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  tariffCardText: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  stepsBox: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    gap: 10,
+  },
+  stepsBoxTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  stepItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  stepBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#06B6D4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  stepItemLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  stepItemFormula: {
+    fontSize: 10,
+    fontStyle: 'italic',
+    marginTop: 1,
+  },
+  stepItemValue: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  inputHint: {
+    fontSize: 11,
+    fontStyle: 'italic',
+    marginTop: 2,
   },
 });

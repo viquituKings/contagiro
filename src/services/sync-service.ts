@@ -1,4 +1,5 @@
 import { parseEngineDisplacement } from '@/utils/engine';
+import { isElectricVehicle, isHybridVehicle, normalizePlate } from '@/utils/vehicle-type';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   collection,
@@ -26,6 +27,7 @@ export type SyncAction =
   | 'DELETE_MAINTENANCE'
   | 'SAVE_PERIODIC_CONFIG'
   | 'SAVE_FUEL_PRICES'
+  | 'SAVE_ELECTRICITY_TARIFF'
   | 'SAVE_USER_PROFILE';
 
 export interface SyncQueueItem {
@@ -284,6 +286,8 @@ export const SyncService = {
               const localVeh =
                 cachedVehicles.find((v) => v.id === effectiveVehId || v.id === oldId) || vehiclePayload;
               const isCar = localVeh.vehicleType !== 'moto';
+              const isEV = isElectricVehicle(localVeh);
+              const isHybrid = isHybridVehicle(localVeh);
 
               const docData: Record<string, unknown> = {
                 tipoVeiculo: localVeh.vehicleType || (isCar ? 'carro' : 'moto'),
@@ -295,19 +299,28 @@ export const SyncService = {
                 capacidadeTanque: localVeh.tankCapacity,
                 tanque: localVeh.tankCapacity,
                 tankCapacity: localVeh.tankCapacity,
-                cilindrada: parseEngineDisplacement(localVeh.engineDisplacement) || (isCar ? 1000 : 150),
+                cilindrada: isEV ? null : (parseEngineDisplacement(localVeh.engineDisplacement) || (isCar ? 1000 : 150)),
                 kmAtual: localVeh.currentOdometer,
                 ultimoKm: localVeh.currentOdometer,
-                ultimoComb:
-                  localVeh.fuelType === 'etanol'
-                    ? 'Etanol'
-                    : localVeh.fuelType === 'diesel'
-                    ? 'Diesel'
-                    : localVeh.fuelType === 'gnv'
-                    ? 'GNV'
-                    : 'Gasolina',
+                ultimoComb: isEV
+                  ? 'Elétrico'
+                  : localVeh.fuelType === 'etanol'
+                  ? 'Etanol'
+                  : localVeh.fuelType === 'diesel'
+                  ? 'Diesel'
+                  : localVeh.fuelType === 'gnv'
+                  ? 'GNV'
+                  : 'Gasolina',
                 combustiveisAceitos: localVeh.acceptedFuelTypes || [localVeh.fuelType],
                 acceptedFuelTypes: localVeh.acceptedFuelTypes || [localVeh.fuelType],
+                capacidadeBateria: localVeh.batteryCapacity ?? (isEV ? localVeh.tankCapacity : null),
+                batteryCapacity: localVeh.batteryCapacity ?? (isEV ? localVeh.tankCapacity : null),
+                consumoMedioInformado: localVeh.declaredConsumption ?? null,
+                declaredConsumption: localVeh.declaredConsumption ?? null,
+                unidadeConsumo: localVeh.consumptionUnit ?? null,
+                consumptionUnit: localVeh.consumptionUnit ?? null,
+                isElectric: isEV,
+                isHybrid,
                 photoUrl: localVeh.photoUrl || null,
                 fotoUrl: localVeh.photoUrl || null,
                 flexEfficiencyRatio: localVeh.flexEfficiencyRatio ?? 0.7,
@@ -317,13 +330,21 @@ export const SyncService = {
               if (localVeh.cadManPeriodica) {
                 docData.revisaoKm = localVeh.revisaoKm ?? 10000;
                 docData.revisaoMes = localVeh.revisaoMes ?? 12;
-                docData.trocaOleoKm = localVeh.trocaOleoKm ?? 10000;
-                docData.trocaOleoMeses = localVeh.trocaOleoMeses ?? 6;
-                if (localVeh.ultimaRevisaoKm != null) docData.ultimaRevisaoKm = localVeh.ultimaRevisaoKm;
-                if (localVeh.ultimaTrocaOleoKm != null) docData.ultimaTrocaOleoKm = localVeh.ultimaTrocaOleoKm;
                 docData.proxRevKm = localVeh.proxRevKm ?? localVeh.currentOdometer + (localVeh.revisaoKm || 10000);
-                docData.proxTrocaOleoKm =
-                  localVeh.proxTrocaOleoKm ?? localVeh.currentOdometer + (localVeh.trocaOleoKm || 10000);
+
+                if (!isEV) {
+                  docData.trocaOleoKm = localVeh.trocaOleoKm ?? 10000;
+                  docData.trocaOleoMeses = localVeh.trocaOleoMeses ?? 6;
+                  if (localVeh.ultimaTrocaOleoKm != null) docData.ultimaTrocaOleoKm = localVeh.ultimaTrocaOleoKm;
+                  docData.proxTrocaOleoKm =
+                    localVeh.proxTrocaOleoKm ?? localVeh.currentOdometer + (localVeh.trocaOleoKm || 10000);
+                } else {
+                  docData.trocaOleoKm = null;
+                  docData.trocaOleoMeses = null;
+                  docData.ultimaTrocaOleoKm = null;
+                  docData.proxTrocaOleoKm = null;
+                }
+                if (localVeh.ultimaRevisaoKm != null) docData.ultimaRevisaoKm = localVeh.ultimaRevisaoKm;
 
                 if (localVeh.vehicleType === 'moto') {
                   if (localVeh.lubrificarCorrenteKm != null) docData.lubrificarCorrenteKm = localVeh.lubrificarCorrenteKm;
@@ -335,6 +356,10 @@ export const SyncService = {
                   if (localVeh.proxEsticarCorrenteKm != null)
                     docData.proxEsticarCorrenteKm = localVeh.proxEsticarCorrenteKm;
                 }
+              }
+
+              if (localVeh.customPeriodicMaintenances) {
+                docData.customPeriodicMaintenances = localVeh.customPeriodicMaintenances;
               }
 
               if (localVeh.manFreioDiant != null) docData.manFreioDiant = localVeh.manFreioDiant;
@@ -355,24 +380,33 @@ export const SyncService = {
               if (effectiveVehId && !effectiveVehId.startsWith('veh-')) {
                 await withFirestoreTimeout(
                   () => setDoc(doc(db, 'users', userEmail, 'veiculos', effectiveVehId), docData, { merge: true }),
-                  3000
+                  6000
                 );
               } else {
-                // Se já existir no Firestore com a mesma placa, atualiza o existente para não duplicar veículo
+                // Se já existir no Firestore com a mesma placa normalizada, atualiza o existente para não duplicar veículo
                 const vehColRef = collection(db, 'users', userEmail, 'veiculos');
-                const vehSnap = await withFirestoreTimeout(() => getDocs(vehColRef), 2000).catch(() => null);
-                const existingVeh = vehSnap?.docs.find(
-                  (d) => String(d.data().placa || '').toUpperCase() === localVeh.plate.toUpperCase()
-                );
+                const vehSnap = await withFirestoreTimeout(() => getDocs(vehColRef), 6000).catch(() => null);
+                const normTarget = normalizePlate(localVeh.plate);
+                const matchingDocs = vehSnap?.docs.filter((d) => {
+                  const p = normalizePlate(d.data().placa as string);
+                  return p && p !== 'SEMPLACA' && p === normTarget;
+                }) || [];
 
-                let targetVehId = existingVeh ? existingVeh.id : null;
-                if (targetVehId) {
+                let targetVehId: string;
+                if (matchingDocs.length > 0) {
+                  targetVehId = matchingDocs[0].id;
                   await withFirestoreTimeout(
-                    () => setDoc(doc(db, 'users', userEmail, 'veiculos', targetVehId!), docData, { merge: true }),
-                    3000
+                    () => setDoc(doc(db, 'users', userEmail, 'veiculos', targetVehId), docData, { merge: true }),
+                    6000
                   );
+                  // Remove quaisquer documentos duplicados extras que possam ter sido criados no Firestore
+                  if (matchingDocs.length > 1) {
+                    for (const dupDoc of matchingDocs.slice(1)) {
+                      withFirestoreTimeout(() => deleteDoc(dupDoc.ref), 3000).catch(() => {});
+                    }
+                  }
                 } else {
-                  const docRef = await withFirestoreTimeout(() => addDoc(vehColRef, docData), 3000);
+                  const docRef = await withFirestoreTimeout(() => addDoc(vehColRef, docData), 6000);
                   targetVehId = docRef.id;
                 }
 
@@ -382,11 +416,33 @@ export const SyncService = {
                   await saveAvatarToLocalCache(`vehicle_${targetVehId}`, localVeh.photoUrl);
                 }
 
-                const idx = cachedVehicles.findIndex((v) => v.id === oldId);
+                // Atualiza cache local e deduplica por placa normalizada
+                const idx = cachedVehicles.findIndex(
+                  (v) =>
+                    v.id === oldId ||
+                    (normTarget && normTarget !== 'SEMPLACA' && normalizePlate(v.plate) === normTarget)
+                );
                 if (idx >= 0) {
-                  cachedVehicles[idx].id = targetVehId;
-                  await AsyncStorage.setItem('@contagiro:vehicles_v1', JSON.stringify(cachedVehicles));
+                  cachedVehicles[idx] = {
+                    ...cachedVehicles[idx],
+                    ...localVeh,
+                    id: targetVehId,
+                  };
                 }
+
+                // Deduplicação estrita do cache local
+                const dedupedCached: Vehicle[] = [];
+                const seenCachePlates = new Set<string>();
+                for (const cv of cachedVehicles) {
+                  const p = normalizePlate(cv.plate);
+                  if (p && p !== 'SEMPLACA') {
+                    if (seenCachePlates.has(p)) continue;
+                    seenCachePlates.add(p);
+                  }
+                  dedupedCached.push(cv);
+                }
+                cachedVehicles = dedupedCached;
+                await AsyncStorage.setItem('@contagiro:vehicles_v1', JSON.stringify(cachedVehicles));
 
                 const activeId = await AsyncStorage.getItem('@contagiro:active_vehicle_id_v1');
                 if (activeId === oldId) {
@@ -432,6 +488,8 @@ export const SyncService = {
                   ? 'Diesel'
                   : refItem.fuelType === 'gnv'
                   ? 'GNV'
+                  : refItem.fuelType === 'eletrico'
+                  ? 'Elétrico'
                   : 'Gasolina';
 
               const firestoreData: Record<string, unknown> = {
@@ -450,6 +508,15 @@ export const SyncService = {
                 observacao: refItem.notes || refItem.gasStation || '',
                 registradoPor: refItem.registeredBy || '',
               };
+
+              if (refItem.rechargeType) firestoreData.tipoRecarga = refItem.rechargeType;
+              if (refItem.kwh != null) firestoreData.kwh = refItem.kwh;
+              if (refItem.pricePerKwh != null) firestoreData.pricePerKwh = refItem.pricePerKwh;
+              if (refItem.batteryInitialPercent != null) firestoreData.percentualInicial = refItem.batteryInitialPercent;
+              if (refItem.batteryFinalPercent != null) firestoreData.percentualFinal = refItem.batteryFinalPercent;
+              if (refItem.netEnergy != null) firestoreData.energiaLiquida = refItem.netEnergy;
+              if (refItem.grossEnergy != null) firestoreData.energiaComPerda = refItem.grossEnergy;
+              if (refItem.energyTariff != null) firestoreData.tarifaEnergia = refItem.energyTariff;
 
               // DEDUPLICAÇÃO NO FIRESTORE:
               // Verifica se já existe um documento com o mesmo ID ou mesmos valores para este veículo
@@ -806,6 +873,33 @@ export const SyncService = {
                   setDoc(doc(db, 'users', userEmail, 'configuracoes', 'precosCombustivel'), prices, {
                     merge: true,
                   }),
+                3000
+              );
+              await this.dequeue(item.id);
+              syncedCount++;
+              break;
+            }
+
+            case 'SAVE_ELECTRICITY_TARIFF': {
+              const { tariff } = item.payload;
+              await withFirestoreTimeout(
+                () =>
+                  setDoc(
+                    doc(db, 'users', userEmail, 'configuracoes', 'tarifaEnergia'),
+                    {
+                      valorTotal: tariff.totalAmount,
+                      totalAmount: tariff.totalAmount,
+                      kwhTotais: tariff.totalKwh,
+                      totalKwh: tariff.totalKwh,
+                      tarifaKwh: tariff.kwhRate,
+                      kwhRate: tariff.kwhRate,
+                      mesReferencia: tariff.referenceMonth || null,
+                      referenceMonth: tariff.referenceMonth || null,
+                      atualizadoEm: tariff.updatedAt || new Date().toISOString(),
+                      updatedAt: tariff.updatedAt || new Date().toISOString(),
+                    },
+                    { merge: true }
+                  ),
                 3000
               );
               await this.dequeue(item.id);

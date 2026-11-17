@@ -8,8 +8,9 @@ import {
 import { Calculations } from '@/services/calculations';
 import { NotificationService } from '@/services/notifications';
 import { StorageService } from '@/services/storage';
-import { MaintenanceCategory, MaintenanceItem, Vehicle } from '@/types/vehicle';
+import { CustomPeriodicMaintenance, MaintenanceCategory, MaintenanceItem, Vehicle } from '@/types/vehicle';
 import { formatDateToBR } from '@/utils/date';
+import { isElectricVehicle } from '@/utils/vehicle-type';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from 'expo-router';
@@ -89,6 +90,13 @@ export default function MaintenancesScreen() {
   const [periodicLubCorrenteKm, setPeriodicLubCorrenteKm] = useState('500');
   const [periodicUltimaEsticarCorrenteKm, setPeriodicUltimaEsticarCorrenteKm] = useState('');
   const [periodicEsticarCorrenteKm, setPeriodicEsticarCorrenteKm] = useState('1500');
+
+  // Manutenções periódicas customizadas cadastradas pelo usuário
+  const [customPeriodicList, setCustomPeriodicList] = useState<CustomPeriodicMaintenance[]>([]);
+  const [newCustomTitle, setNewCustomTitle] = useState('');
+  const [newCustomInterval, setNewCustomInterval] = useState('');
+  const [newCustomLastKm, setNewCustomLastKm] = useState('');
+  const [newCustomCost, setNewCustomCost] = useState('');
 
   // Controle de teclado e foco para evidenciar campos de inserção
   const [keyboardVisible, setKeyboardVisible] = useState(false);
@@ -206,6 +214,7 @@ export default function MaintenancesScreen() {
   };
 
   const isMoto = vehicle?.vehicleType === 'moto';
+  const isEV = isElectricVehicle(vehicle);
 
   // Categorias disponíveis filtradas conforme o perfil do veículo
   const availableCategories: { id: MaintenanceCategory; label: string; defaultTitle: string; defaultInterval: string }[] = isMoto
@@ -218,6 +227,19 @@ export default function MaintenancesScreen() {
       { id: 'esticar_corrente', label: 'Esticar Corrente', defaultTitle: 'Ajuste e Tensão da Corrente', defaultInterval: String(vehicle?.esticarCorrenteKm || 1500) },
       { id: 'suspensao', label: 'Suspensão', defaultTitle: 'Manutenção da Suspensão', defaultInterval: '20000' },
       { id: 'bateria', label: 'Bateria e Elétrica', defaultTitle: 'Substituição da Bateria', defaultInterval: '30000' },
+      { id: 'outros', label: 'Outras Manutenções', defaultTitle: 'Serviço Diverso', defaultInterval: '' },
+    ]
+    : isEV
+    ? [
+      { id: 'revisao_geral', label: 'Revisão Preventiva (EV)', defaultTitle: 'Revisão Preventiva (EV)', defaultInterval: String(vehicle?.revisaoKm || 10000) },
+      { id: 'freios', label: 'Pastilhas e Freios', defaultTitle: 'Pastilhas e Fluido de Freio', defaultInterval: '' },
+      { id: 'troca_pneus', label: 'Troca de Pneus', defaultTitle: 'Substituição de Pneu(s)', defaultInterval: '' },
+      { id: 'alinhamento_balanceamento', label: 'Alinhamento & Balanceamento', defaultTitle: 'Alinhamento 3D + Balanceamento', defaultInterval: '10000' },
+      { id: 'rodizio_pneus', label: 'Rodízio de Pneus', defaultTitle: 'Rodízio e Calibragem dos Pneus', defaultInterval: '10000' },
+      { id: 'suspensao', label: 'Suspensão', defaultTitle: 'Amortecedores / Buchas / Pivôs', defaultInterval: '30000' },
+      { id: 'ar_condicionado', label: 'Ar Condicionado', defaultTitle: 'Higienização e Filtro de Cabine', defaultInterval: '15000' },
+      { id: 'bateria', label: 'Bateria / Alta Voltagem', defaultTitle: 'Revisão da Bateria / Arrefecimento EV', defaultInterval: '20000' },
+      { id: 'documentacao', label: 'IPVA e Seguro', defaultTitle: 'Licenciamento e IPVA Anual', defaultInterval: '' },
       { id: 'outros', label: 'Outras Manutenções', defaultTitle: 'Serviço Diverso', defaultInterval: '' },
     ]
     : [
@@ -263,6 +285,7 @@ export default function MaintenancesScreen() {
       return String(vehicle?.revisaoKm || (isMoto ? 6000 : 10000));
     }
     if (catId === 'oleo_filtro') {
+      if (isEV) return '';
       return String(vehicle?.trocaOleoKm || (isMoto ? 3000 : 10000));
     }
     if (catId === 'lubrificar_corrente') {
@@ -276,19 +299,20 @@ export default function MaintenancesScreen() {
   };
 
   const handleSelectCategory = (catId: MaintenanceCategory) => {
-    setCategory(catId);
-    const found = availableCategories.find((c) => c.id === catId);
+    const effectiveCatId = isEV && catId === 'oleo_filtro' ? 'revisao_geral' : catId;
+    setCategory(effectiveCatId);
+    const found = availableCategories.find((c) => c.id === effectiveCatId);
     if (found) {
       if (!title || availableCategories.some((c) => c.defaultTitle === title)) {
         setTitle(found.defaultTitle);
       }
     }
-    setNextIntervalKm(getIntervalForCategory(catId));
+    setNextIntervalKm(getIntervalForCategory(effectiveCatId));
     // Reseta lado caso mude para categoria que não exige lado
-    if (catId !== 'freios' && catId !== 'troca_pneus') {
+    if (effectiveCatId !== 'freios' && effectiveCatId !== 'troca_pneus') {
       setSelectedSide('');
     } else if (!selectedSide) {
-      setSelectedSide(catId === 'freios' ? 'DIANTEIRA' : (isMoto ? 'TRASEIRA' : 'DIANTEIRO_ESQUERDO'));
+      setSelectedSide(effectiveCatId === 'freios' ? 'DIANTEIRA' : (isMoto ? 'TRASEIRA' : 'DIANTEIRO_ESQUERDO'));
     }
   };
 
@@ -323,7 +347,7 @@ export default function MaintenancesScreen() {
       return;
     }
     setEditingMntId(null);
-    const catToUse = preselectedCategory || 'oleo_filtro';
+    const catToUse = preselectedCategory || (isEV ? 'revisao_geral' : 'oleo_filtro');
     handleSelectCategory(catToUse);
     if (customTitle) {
       setTitle(customTitle);
@@ -474,9 +498,12 @@ export default function MaintenancesScreen() {
     setPeriodicUltimaRevKm(String(vehicle.ultimaRevisaoKm ?? vehicle.currentOdometer ?? 0));
     setPeriodicRevKm(String(vehicle.revisaoKm ?? (isMoto ? 6000 : 10000)));
     setPeriodicRevMes(String(vehicle.revisaoMes ?? 12));
-    setPeriodicUltimaTrocaOleoKm(String(vehicle.ultimaTrocaOleoKm ?? vehicle.currentOdometer ?? 0));
-    setPeriodicTrocaOleoKm(String(vehicle.trocaOleoKm ?? (isMoto ? 3000 : 10000)));
-    setPeriodicTrocaOleoMeses(String(vehicle.trocaOleoMeses ?? 6));
+
+    if (!isEV) {
+      setPeriodicUltimaTrocaOleoKm(String(vehicle.ultimaTrocaOleoKm ?? vehicle.currentOdometer ?? 0));
+      setPeriodicTrocaOleoKm(String(vehicle.trocaOleoKm ?? (isMoto ? 3000 : 10000)));
+      setPeriodicTrocaOleoMeses(String(vehicle.trocaOleoMeses ?? 6));
+    }
 
     if (isMoto) {
       setPeriodicUltimaLubCorrenteKm(String(vehicle.ultimaLubCorrenteKm ?? vehicle.currentOdometer ?? 0));
@@ -485,7 +512,52 @@ export default function MaintenancesScreen() {
       setPeriodicEsticarCorrenteKm(String(vehicle.esticarCorrenteKm ?? 1500));
     }
 
+    setCustomPeriodicList(vehicle.customPeriodicMaintenances ? [...vehicle.customPeriodicMaintenances] : []);
+    setNewCustomTitle('');
+    setNewCustomInterval('');
+    setNewCustomLastKm(String(vehicle.currentOdometer || ''));
+    setNewCustomCost('');
+
     setModalPeriodicVisible(true);
+  };
+
+  const handleAddCustomPeriodic = () => {
+    const trimmedTitle = newCustomTitle.trim();
+    if (!trimmedTitle) {
+      Alert.alert('Atenção', 'Informe a descrição ou nome da manutenção periódica.');
+      return;
+    }
+    const interval = parseInt(newCustomInterval, 10);
+    if (isNaN(interval) || interval <= 0) {
+      Alert.alert('Atenção', 'Informe um intervalo de quilometragem válido (maior que 0).');
+      return;
+    }
+    const lastKm = newCustomLastKm ? parseInt(newCustomLastKm, 10) : (vehicle?.currentOdometer ?? 0);
+    if (isNaN(lastKm) || lastKm < 0) {
+      Alert.alert('Atenção', 'Informe uma quilometragem de última execução válida.');
+      return;
+    }
+    const estCost = newCustomCost ? parseFloat(newCustomCost.replace(',', '.')) : undefined;
+
+    const newItem: CustomPeriodicMaintenance = {
+      id: `custom-m-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      title: trimmedTitle,
+      intervalKm: interval,
+      lastKm,
+      nextDueKm: lastKm + interval,
+      estimatedCost: estCost && !isNaN(estCost) && estCost > 0 ? estCost : undefined,
+      createdAt: new Date().toISOString(),
+    };
+
+    setCustomPeriodicList((prev) => [...prev, newItem]);
+    setNewCustomTitle('');
+    setNewCustomInterval('');
+    setNewCustomLastKm(String(vehicle?.currentOdometer || ''));
+    setNewCustomCost('');
+  };
+
+  const handleRemoveCustomPeriodic = (id: string) => {
+    setCustomPeriodicList((prev) => prev.filter((c) => c.id !== id));
   };
 
   const handleSavePeriodicConfig = async () => {
@@ -494,17 +566,25 @@ export default function MaintenancesScreen() {
     const uRev = parseInt(periodicUltimaRevKm, 10);
     const rKm = parseInt(periodicRevKm, 10);
     const rMes = parseInt(periodicRevMes, 10);
-    const uOleo = parseInt(periodicUltimaTrocaOleoKm, 10);
-    const oKm = parseInt(periodicTrocaOleoKm, 10);
-    const oMes = parseInt(periodicTrocaOleoMeses, 10);
 
     if (isNaN(uRev) || uRev < 0 || isNaN(rKm) || rKm <= 0 || isNaN(rMes) || rMes <= 0) {
       Alert.alert('Erro', 'Insira valores válidos para o ciclo de revisão.');
       return;
     }
-    if (isNaN(uOleo) || uOleo < 0 || isNaN(oKm) || oKm <= 0 || isNaN(oMes) || oMes <= 0) {
-      Alert.alert('Erro', 'Insira valores válidos para o ciclo de troca de óleo.');
-      return;
+
+    let uOleo: number | undefined;
+    let oKm: number | undefined;
+    let oMes: number | undefined;
+
+    if (!isEV) {
+      uOleo = parseInt(periodicUltimaTrocaOleoKm, 10);
+      oKm = parseInt(periodicTrocaOleoKm, 10);
+      oMes = parseInt(periodicTrocaOleoMeses, 10);
+
+      if (isNaN(uOleo) || uOleo < 0 || isNaN(oKm) || oKm <= 0 || isNaN(oMes) || oMes <= 0) {
+        Alert.alert('Erro', 'Insira valores válidos para o ciclo de troca de óleo.');
+        return;
+      }
     }
 
     let lubKm: number | undefined;
@@ -541,6 +621,7 @@ export default function MaintenancesScreen() {
         ultimaLubCorrenteKm: uLubKm,
         esticarCorrenteKm: esticarKm,
         ultimaEsticarCorrenteKm: uEsticarKm,
+        customPeriodicMaintenances: customPeriodicList,
       });
 
       if (updated) {
@@ -1036,7 +1117,7 @@ export default function MaintenancesScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.bannerTitle, { color: theme.text }]}>Periodicidade não configurada</Text>
                     <Text style={[styles.bannerSubtitle, { color: theme.textMuted }]}>
-                      Configure a periodicidade de revisões e trocas de óleo {isMoto ? 'e corrente' : ''} deste veículo para ativar os alertas automáticos.
+                      Configure a periodicidade de revisões {isEV ? 'preventivas' : 'e trocas de óleo'} {isMoto ? 'e corrente' : ''} deste veículo para ativar os alertas automáticos.
                     </Text>
                   </View>
                 </View>
@@ -1234,7 +1315,9 @@ export default function MaintenancesScreen() {
                 <Ionicons name="construct-outline" size={50} color={theme.textMuted} />
                 <Text style={[styles.emptyTitle, { color: theme.text }]}>Nenhuma manutenção registrada</Text>
                 <Text style={[styles.emptySubtitle, { color: theme.textMuted }]}>
-                  {'Toque em "+ Serviço" acima para lançar sua primeira troca de óleo, pneus ou revisão.'}
+                  {isEV
+                    ? 'Toque em "+ Serviço" acima para lançar sua primeira revisão preventiva, pneus ou serviço.'
+                    : 'Toque em "+ Serviço" acima para lançar sua primeira troca de óleo, pneus ou revisão.'}
                 </Text>
               </View>
             }
@@ -1457,6 +1540,55 @@ export default function MaintenancesScreen() {
                   </View>
                 )}
 
+                {/* SUGESTÕES DE ITENS PERIÓDICOS PERSONALIZADOS */}
+                {vehicle?.customPeriodicMaintenances && vehicle.customPeriodicMaintenances.length > 0 && (
+                  <View style={styles.inputGroup}>
+                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>
+                      Manutenções Periódicas do Veículo:
+                    </Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 2 }}>
+                      {vehicle.customPeriodicMaintenances.map((c) => {
+                        const isMatch = title.toLowerCase().trim() === c.title.toLowerCase().trim();
+                        return (
+                          <TouchableOpacity
+                            key={c.id}
+                            style={[
+                              styles.catPill,
+                              {
+                                backgroundColor: isMatch ? theme.accent : theme.bg,
+                                borderColor: isMatch ? theme.accent : theme.cardBorder,
+                              },
+                            ]}
+                            onPress={() => {
+                              setTitle(c.title);
+                              setCategory('outros');
+                              setNextIntervalKm(String(c.intervalKm));
+                              if (c.estimatedCost && !cost) {
+                                setCost(String(c.estimatedCost));
+                              }
+                            }}
+                          >
+                            <Ionicons
+                              name="sparkles"
+                              size={12}
+                              color={isMatch ? '#FFFFFF' : theme.accent}
+                              style={{ marginRight: 4 }}
+                            />
+                            <Text
+                              style={[
+                                styles.catPillText,
+                                { color: isMatch ? '#FFFFFF' : theme.text },
+                              ]}
+                            >
+                              {c.title} ({c.intervalKm.toLocaleString('pt-BR')} km)
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                )}
+
                 {/* DESCRIÇÃO / TÍTULO DO SERVIÇO */}
                 <View style={styles.inputGroup}>
                   <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Descrição do Serviço / Peça:</Text>
@@ -1465,7 +1597,7 @@ export default function MaintenancesScreen() {
                     value={title}
                     onChangeText={setTitle}
                     onFocus={() => scrollToMntInput(80)}
-                    placeholder="Ex: Troca de Óleo 5W30 + Filtros"
+                    placeholder={isEV ? "Ex: Revisão do Sistema de Alta Voltagem / Filtro de Cabine" : "Ex: Troca de Óleo 5W30 + Filtros"}
                     placeholderTextColor={theme.textMuted}
                   />
                 </View>
@@ -1778,7 +1910,9 @@ export default function MaintenancesScreen() {
                 <View style={[styles.sectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                     <Ionicons name="build" size={16} color={theme.blue} />
-                    <Text style={[styles.sectionTitle, { color: theme.text }]}>Ciclo de Revisão Geral</Text>
+                    <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                      {isEV ? 'Ciclo de Revisão Preventiva (EV)' : 'Ciclo de Revisão Geral'}
+                    </Text>
                   </View>
 
                   <View style={styles.inputGroup}>
@@ -1823,54 +1957,56 @@ export default function MaintenancesScreen() {
                   </View>
                 </View>
 
-                {/* CICLO DE TROCA DE ÓLEO */}
-                <View style={[styles.sectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-                    <Ionicons name="water" size={16} color={theme.amber} />
-                    <Text style={[styles.sectionTitle, { color: theme.text }]}>Ciclo de Troca de Óleo</Text>
-                  </View>
+                {/* CICLO DE TROCA DE ÓLEO (EXCLUSIVO PARA MOTORES A COMBUSTÃO) */}
+                {!isEV && (
+                  <View style={[styles.sectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                      <Ionicons name="water" size={16} color={theme.amber} />
+                      <Text style={[styles.sectionTitle, { color: theme.text }]}>Ciclo de Troca de Óleo</Text>
+                    </View>
 
-                  <View style={styles.inputGroup}>
-                    <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Última Troca de Óleo (km):</Text>
-                    <TextInput
-                      style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
-                      keyboardType="numeric"
-                      value={periodicUltimaTrocaOleoKm}
-                      onChangeText={setPeriodicUltimaTrocaOleoKm}
-                      onFocus={() => scrollToPeriodicInput(240)}
-                      placeholder="Ex: 55000"
-                      placeholderTextColor={theme.textMuted}
-                    />
-                  </View>
-
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
-                    <View style={[styles.inputGroup, { flex: 1.2 }]}>
-                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>A cada quantos km:</Text>
+                    <View style={styles.inputGroup}>
+                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Última Troca de Óleo (km):</Text>
                       <TextInput
                         style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
                         keyboardType="numeric"
-                        value={periodicTrocaOleoKm}
-                        onChangeText={setPeriodicTrocaOleoKm}
-                        onFocus={() => scrollToPeriodicInput(320)}
-                        placeholder={isMoto ? 'Ex: 3000' : 'Ex: 10000'}
+                        value={periodicUltimaTrocaOleoKm}
+                        onChangeText={setPeriodicUltimaTrocaOleoKm}
+                        onFocus={() => scrollToPeriodicInput(240)}
+                        placeholder="Ex: 55000"
                         placeholderTextColor={theme.textMuted}
                       />
                     </View>
 
-                    <View style={[styles.inputGroup, { flex: 0.8 }]}>
-                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Ou Meses:</Text>
-                      <TextInput
-                        style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
-                        keyboardType="numeric"
-                        value={periodicTrocaOleoMeses}
-                        onChangeText={setPeriodicTrocaOleoMeses}
-                        onFocus={() => scrollToPeriodicInput(320)}
-                        placeholder="Ex: 6"
-                        placeholderTextColor={theme.textMuted}
-                      />
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+                      <View style={[styles.inputGroup, { flex: 1.2 }]}>
+                        <Text style={[styles.inputLabel, { color: theme.textMuted }]}>A cada quantos km:</Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
+                          keyboardType="numeric"
+                          value={periodicTrocaOleoKm}
+                          onChangeText={setPeriodicTrocaOleoKm}
+                          onFocus={() => scrollToPeriodicInput(320)}
+                          placeholder={isMoto ? 'Ex: 3000' : 'Ex: 10000'}
+                          placeholderTextColor={theme.textMuted}
+                        />
+                      </View>
+
+                      <View style={[styles.inputGroup, { flex: 0.8 }]}>
+                        <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Ou Meses:</Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
+                          keyboardType="numeric"
+                          value={periodicTrocaOleoMeses}
+                          onChangeText={setPeriodicTrocaOleoMeses}
+                          onFocus={() => scrollToPeriodicInput(320)}
+                          placeholder="Ex: 6"
+                          placeholderTextColor={theme.textMuted}
+                        />
+                      </View>
                     </View>
                   </View>
-                </View>
+                )}
 
                 {/* PERIODICIDADE DE CORRENTE / RELAÇÃO (EXCLUSIVO PARA MOTOCICLETAS) */}
                 {isMoto && (
@@ -1939,6 +2075,145 @@ export default function MaintenancesScreen() {
                     </View>
                   </View>
                 )}
+
+                {/* MANUTENÇÕES PERIÓDICAS PERSONALIZADAS (PARA TODOS OS TIPOS DE VEÍCULOS) */}
+                <View style={[styles.sectionCard, { backgroundColor: theme.bg, borderColor: theme.cardBorder }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <Ionicons name="sparkles" size={16} color={theme.accent} />
+                    <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                      Manutenções Periódicas Personalizadas
+                    </Text>
+                  </View>
+                  <Text style={[styles.inputLabel, { color: theme.textMuted, marginBottom: 10 }]}>
+                    Cadastre itens específicos com controle próprio de quilometragem:
+                  </Text>
+
+                  {/* LISTA DE ITENS JÁ CADASTRADOS */}
+                  {customPeriodicList.length > 0 && (
+                    <View style={{ gap: 8, marginBottom: 12 }}>
+                      {customPeriodicList.map((item) => (
+                        <View
+                          key={item.id}
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: 10,
+                            borderRadius: 10,
+                            backgroundColor: theme.card,
+                            borderWidth: 1,
+                            borderColor: theme.cardBorder,
+                          }}
+                        >
+                          <View style={{ flex: 1, marginRight: 8 }}>
+                            <Text style={{ fontSize: 14, fontWeight: '700', color: theme.text }}>
+                              {item.title}
+                            </Text>
+                            <Text style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }}>
+                              A cada {item.intervalKm.toLocaleString('pt-BR')} km
+                              {item.lastKm != null ? ` • Última: ${item.lastKm.toLocaleString('pt-BR')} km` : ''}
+                              {item.nextDueKm != null ? ` • Próx: ${item.nextDueKm.toLocaleString('pt-BR')} km` : ''}
+                            </Text>
+                            {item.estimatedCost ? (
+                              <Text style={{ fontSize: 11, color: theme.accent, marginTop: 1 }}>
+                                Est: R$ {item.estimatedCost.toFixed(2).replace('.', ',')}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <TouchableOpacity
+                            onPress={() => handleRemoveCustomPeriodic(item.id)}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons name="trash-outline" size={18} color="#EF4444" />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+
+                  {/* FORMULÁRIO PARA ADICIONAR NOVO ITEM */}
+                  <View
+                    style={{
+                      padding: 10,
+                      borderRadius: 10,
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#F8FAFC',
+                      borderWidth: 1,
+                      borderColor: theme.cardBorder,
+                      gap: 8,
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: theme.text }}>
+                      + Novo Item Personalizado
+                    </Text>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Descrição / Peça:</Text>
+                      <TextInput
+                        style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
+                        value={newCustomTitle}
+                        onChangeText={setNewCustomTitle}
+                        placeholder={isEV ? "Ex: Fluido de Arrefecimento da Bateria" : "Ex: Correia Dentada / Velas"}
+                        placeholderTextColor={theme.textMuted}
+                      />
+                    </View>
+
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <View style={[styles.inputGroup, { flex: 1 }]}>
+                        <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Intervalo (km):</Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
+                          keyboardType="numeric"
+                          value={newCustomInterval}
+                          onChangeText={setNewCustomInterval}
+                          placeholder="Ex: 20000"
+                          placeholderTextColor={theme.textMuted}
+                        />
+                      </View>
+                      <View style={[styles.inputGroup, { flex: 1 }]}>
+                        <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Última (km):</Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
+                          keyboardType="numeric"
+                          value={newCustomLastKm}
+                          onChangeText={setNewCustomLastKm}
+                          placeholder={String(vehicle?.currentOdometer || 0)}
+                          placeholderTextColor={theme.textMuted}
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={[styles.inputLabel, { color: theme.textMuted }]}>Custo Estimado R$ (opcional):</Text>
+                      <TextInput
+                        style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.cardBorder }]}
+                        keyboardType="decimal-pad"
+                        value={newCustomCost}
+                        onChangeText={setNewCustomCost}
+                        placeholder="Ex: 250,00"
+                        placeholderTextColor={theme.textMuted}
+                      />
+                    </View>
+
+                    <TouchableOpacity
+                      style={{
+                        backgroundColor: theme.accent,
+                        borderRadius: 8,
+                        paddingVertical: 10,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexDirection: 'row',
+                        gap: 6,
+                        marginTop: 4,
+                      }}
+                      onPress={handleAddCustomPeriodic}
+                    >
+                      <Ionicons name="add-circle-outline" size={18} color="#FFFFFF" />
+                      <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>
+                        Adicionar ao Plano
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
 
                 <TouchableOpacity
                   style={[

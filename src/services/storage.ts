@@ -20,6 +20,8 @@ import {
   FuelType,
   VehicleType,
   FuelPrices,
+  ElectricityTariff,
+  CustomPeriodicMaintenance,
 } from '@/types/vehicle';
 import { SyncService } from '@/services/sync-service';
 import {
@@ -30,6 +32,7 @@ import {
 } from '@/services/image-picker';
 import { compareDatesDesc } from '@/utils/date';
 import { parseEngineDisplacement } from '@/utils/engine';
+import { isElectricVehicle, isHybridVehicle, normalizePlate } from '@/utils/vehicle-type';
 
 export const MAX_CACHED_REFUELINGS_PER_VEHICLE = 5;
 export const MAX_CACHED_MAINTENANCES_PER_VEHICLE = 5;
@@ -44,6 +47,7 @@ const STORAGE_KEYS = {
   MAINTENANCES: '@contagiro:maintenances_v1',
   HAS_SEEDED: '@contagiro:has_seeded_v1',
   FUEL_PRICES: '@contagiro:fuel_prices_v1',
+  ELECTRICITY_TARIFF: '@contagiro:electricity_tariff_v1',
 };
 
 export interface VehicleTotalizersCache {
@@ -326,6 +330,9 @@ export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknow
     etanol: 'etanol',
     diesel: 'diesel',
     gnv: 'gnv',
+    eletrico: 'eletrico',
+    'elétrico': 'eletrico',
+    electric: 'eletrico',
   };
   const rawFuel = String(data.ultimoComb || 'gasolina').toLowerCase();
   const fuelType: FuelType = fuelMap[rawFuel] || 'gasolina';
@@ -358,10 +365,21 @@ export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknow
     currentOdometer: Number(data.kmAtual ?? data.ultimoKm ?? 0),
     fuelType,
     acceptedFuelTypes,
+    isElectric: data.isElectric != null ? Boolean(data.isElectric) : Boolean(acceptedFuelTypes?.includes('eletrico') && !acceptedFuelTypes?.some((f) => f !== 'eletrico')),
+    isHybrid: data.isHybrid != null ? Boolean(data.isHybrid) : Boolean(acceptedFuelTypes?.includes('eletrico') && acceptedFuelTypes?.some((f) => f !== 'eletrico')),
+    batteryCapacity: data.capacidadeBateria != null
+      ? Number(data.capacidadeBateria)
+      : (data.batteryCapacity != null
+        ? Number(data.batteryCapacity)
+        : (data.isElectric || (acceptedFuelTypes?.includes('eletrico') && !acceptedFuelTypes?.some((f) => f !== 'eletrico')) ? tankCapacity : undefined)),
+    declaredConsumption: data.consumoMedioInformado != null ? Number(data.consumoMedioInformado) : (data.declaredConsumption != null ? Number(data.declaredConsumption) : undefined),
+    consumptionUnit: (data.unidadeConsumo || data.consumptionUnit || 'kwh_100km') as 'kwh_100km' | 'km_kwh',
     photoUrl: (data.photoUrl as string) || (data.fotoUrl as string) || undefined,
     flexEfficiencyRatio: Number(data.flexEfficiencyRatio) || 0.70,
     vehicleType: (data.tipoVeiculo === 'moto' ? 'moto' : 'carro') as VehicleType,
-    engineDisplacement: parseEngineDisplacement(data.cilindrada),
+    engineDisplacement: (data.isElectric || (acceptedFuelTypes?.includes('eletrico') && !acceptedFuelTypes?.some((f) => f !== 'eletrico')))
+      ? undefined
+      : parseEngineDisplacement(data.cilindrada),
     cadManPeriodica: Boolean(data.cadManPeriodica),
     revisaoKm: data.revisaoKm != null ? Number(data.revisaoKm) : undefined,
     revisaoMes: data.revisaoMes != null ? Number(data.revisaoMes) : undefined,
@@ -414,6 +432,11 @@ export function mapFirestoreDocToVehicle(id: string, data: Record<string, unknow
       ? data.compartilhadoCom.map(String)
       : undefined,
     sharedAt: (data.sharedAt as string) || (data.compartilhadoEm as string) || undefined,
+    customPeriodicMaintenances: Array.isArray(data.customPeriodicMaintenances)
+      ? (data.customPeriodicMaintenances as CustomPeriodicMaintenance[])
+      : Array.isArray(data.manutencoesPeriodicasCustom)
+      ? (data.manutencoesPeriodicasCustom as CustomPeriodicMaintenance[])
+      : undefined,
   };
 }
 
@@ -423,6 +446,9 @@ export function mapFirestoreDocToRefueling(id: string, data: Record<string, unkn
     etanol: 'etanol',
     diesel: 'diesel',
     gnv: 'gnv',
+    eletrico: 'eletrico',
+    'elétrico': 'eletrico',
+    electric: 'eletrico',
   };
   const rawFuel = String(data.combustivel || data.fuelType || 'gasolina').toLowerCase();
   const fuelType: FuelType = fuelMap[rawFuel] || 'gasolina';
@@ -473,6 +499,14 @@ export function mapFirestoreDocToRefueling(id: string, data: Record<string, unkn
     consumptionKmPerLiter,
     costPerKm,
     registeredBy: (data.registradoPor as string) || (data.registeredBy as string) || undefined,
+    rechargeType: (data.tipoRecarga || data.rechargeType) as 'eletroposto' | 'residencial' | undefined,
+    kwh: data.kwh != null ? Number(data.kwh) : (fuelType === 'eletrico' ? liters : undefined),
+    pricePerKwh: data.pricePerKwh != null ? Number(data.pricePerKwh) : (fuelType === 'eletrico' ? pricePerLiter : undefined),
+    batteryInitialPercent: data.percentualInicial != null ? Number(data.percentualInicial) : (data.batteryInitialPercent != null ? Number(data.batteryInitialPercent) : undefined),
+    batteryFinalPercent: data.percentualFinal != null ? Number(data.percentualFinal) : (data.batteryFinalPercent != null ? Number(data.batteryFinalPercent) : undefined),
+    netEnergy: data.energiaLiquida != null ? Number(data.energiaLiquida) : (data.netEnergy != null ? Number(data.netEnergy) : undefined),
+    grossEnergy: data.energiaComPerda != null ? Number(data.energiaComPerda) : (data.grossEnergy != null ? Number(data.grossEnergy) : undefined),
+    energyTariff: data.tarifaEnergia != null ? Number(data.tarifaEnergia) : (data.energyTariff != null ? Number(data.energyTariff) : undefined),
   };
 }
 
@@ -779,9 +813,12 @@ export const StorageService = {
       try {
         const querySnapshot = await withFirestoreTimeout(
           () => getDocs(collection(db, 'users', userEmail, 'veiculos')),
-          1500
+          6000
         );
         let list: Vehicle[] = [];
+        const seenPlates = new Map<string, Vehicle>();
+        const duplicatesToDelete: string[] = [];
+
         if (!querySnapshot.empty) {
           for (const d of querySnapshot.docs) {
             const docData = d.data() as Record<string, unknown>;
@@ -797,11 +834,36 @@ export const StorageService = {
             if (isDemoVehicle(veh) || !hasVehicleIdentity || isPhantomVehicle(veh)) {
               withFirestoreTimeout(
                 () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', d.id)),
-                1500
+                3000
               ).catch(() => {});
               saveAvatarToLocalCache(`vehicle_${d.id}`, null).catch(() => {});
             } else {
+              const norm = normalizePlate(veh.plate);
+              if (norm && norm !== 'SEMPLACA') {
+                if (seenPlates.has(norm)) {
+                  const existing = seenPlates.get(norm)!;
+                  if ((veh.currentOdometer || 0) > (existing.currentOdometer || 0)) {
+                    duplicatesToDelete.push(existing.id);
+                    seenPlates.set(norm, veh);
+                    const idx = list.findIndex((v) => v.id === existing.id);
+                    if (idx >= 0) list[idx] = veh;
+                  } else {
+                    duplicatesToDelete.push(veh.id);
+                  }
+                  continue;
+                }
+                seenPlates.set(norm, veh);
+              }
               list.push(veh);
+            }
+          }
+
+          if (duplicatesToDelete.length > 0) {
+            for (const dupId of duplicatesToDelete) {
+              withFirestoreTimeout(
+                () => deleteDoc(doc(db, 'users', userEmail, 'veiculos', dupId)),
+                3000
+              ).catch(() => {});
             }
           }
         }
@@ -906,12 +968,18 @@ export const StorageService = {
         // Nenhum dado do Firestore pode sobrescrever o que foi inserido no app quando sem rede.
         for (const [vId, pv] of pendingVehicleSaves.entries()) {
           if (isDemoVehicle(pv)) continue;
-          const idx = list.findIndex((v) => v.id === vId);
+          const normPv = normalizePlate(pv.plate);
+          const idx = list.findIndex(
+            (v) =>
+              v.id === vId ||
+              (normPv && normPv !== 'SEMPLACA' && normalizePlate(v.plate) === normPv)
+          );
           if (idx >= 0) {
             const fsVeh = list[idx];
             list[idx] = {
               ...fsVeh,
               ...pv,
+              id: fsVeh.id.startsWith('veh-') ? pv.id : fsVeh.id,
               currentOdometer: Math.max(fsVeh.currentOdometer || 0, pv.currentOdometer || 0),
               createdAt: pv.createdAt || fsVeh.createdAt,
               transferredAt: pv.transferredAt || fsVeh.transferredAt,
@@ -926,10 +994,17 @@ export const StorageService = {
         for (const cachedVeh of cachedList) {
           if (
             cachedVeh.id.startsWith('veh-') &&
-            !isDemoVehicle(cachedVeh) &&
-            !list.some((v) => v.id === cachedVeh.id)
+            !isDemoVehicle(cachedVeh)
           ) {
-            list.push(cachedVeh);
+            const normCached = normalizePlate(cachedVeh.plate);
+            const alreadyInList = list.some(
+              (v) =>
+                v.id === cachedVeh.id ||
+                (normCached && normCached !== 'SEMPLACA' && normalizePlate(v.plate) === normCached)
+            );
+            if (!alreadyInList) {
+              list.push(cachedVeh);
+            }
           }
         }
 
@@ -1021,6 +1096,16 @@ export const StorageService = {
               ) || undefined;
             }
 
+            if (isElectricVehicle(v)) {
+              delete merged.ultimaTrocaOleoKm;
+              delete merged.proxTrocaOleoKm;
+              delete merged.trocaOleoKm;
+              delete merged.trocaOleoMeses;
+            }
+            if (v.customPeriodicMaintenances || prev?.customPeriodicMaintenances) {
+              merged.customPeriodicMaintenances = v.customPeriodicMaintenances || prev?.customPeriodicMaintenances;
+            }
+
             if (pendingConfig) {
               Object.assign(merged, pendingConfig);
             }
@@ -1037,6 +1122,19 @@ export const StorageService = {
             return merged;
           })
         );
+
+        // Deduplicação final por placa normalizada para garantir integridade absoluta da lista
+        const deduplicatedList: Vehicle[] = [];
+        const finalSeen = new Set<string>();
+        for (const v of list) {
+          const norm = normalizePlate(v.plate);
+          if (norm && norm !== 'SEMPLACA') {
+            if (finalSeen.has(norm)) continue;
+            finalSeen.add(norm);
+          }
+          deduplicatedList.push(v);
+        }
+        list = deduplicatedList;
 
         const preferredId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
         list = sortVehiclesByOrder(list, preferredId);
@@ -1096,6 +1194,8 @@ export const StorageService = {
     if (isOnline && userEmail) {
       try {
         const isCar = vehicle.vehicleType !== 'moto';
+        const isEV = isElectricVehicle(vehicle);
+        const isHybrid = isHybridVehicle(vehicle);
         const docData: Record<string, unknown> = {
           tipoVeiculo: vehicle.vehicleType || (isCar ? 'carro' : 'moto'),
           placa: vehicle.plate.toUpperCase(),
@@ -1105,17 +1205,28 @@ export const StorageService = {
           capacidadeTanque: vehicle.tankCapacity,
           tanque: vehicle.tankCapacity,
           tankCapacity: vehicle.tankCapacity,
-          cilindrada: parseEngineDisplacement(vehicle.engineDisplacement) || (isCar ? 1000 : 150),
+          cilindrada: isEV ? null : (parseEngineDisplacement(vehicle.engineDisplacement) || (isCar ? 1000 : 150)),
           kmAtual: vehicle.currentOdometer,
           ultimoKm: vehicle.currentOdometer,
-          ultimoComb:
-            vehicle.fuelType === 'etanol'
-              ? 'Etanol'
-              : vehicle.fuelType === 'diesel'
-              ? 'Diesel'
-              : 'Gasolina',
+          ultimoComb: isEV
+            ? 'Elétrico'
+            : vehicle.fuelType === 'etanol'
+            ? 'Etanol'
+            : vehicle.fuelType === 'diesel'
+            ? 'Diesel'
+            : vehicle.fuelType === 'gnv'
+            ? 'GNV'
+            : 'Gasolina',
           combustiveisAceitos: vehicle.acceptedFuelTypes || [vehicle.fuelType],
           acceptedFuelTypes: vehicle.acceptedFuelTypes || [vehicle.fuelType],
+          capacidadeBateria: vehicle.batteryCapacity ?? (isEV ? vehicle.tankCapacity : null),
+          batteryCapacity: vehicle.batteryCapacity ?? (isEV ? vehicle.tankCapacity : null),
+          consumoMedioInformado: vehicle.declaredConsumption ?? null,
+          declaredConsumption: vehicle.declaredConsumption ?? null,
+          unidadeConsumo: vehicle.consumptionUnit ?? null,
+          consumptionUnit: vehicle.consumptionUnit ?? null,
+          isElectric: isEV,
+          isHybrid,
           photoUrl: vehicle.photoUrl || null,
           fotoUrl: vehicle.photoUrl || null,
           cadManPeriodica: vehicle.cadManPeriodica ?? false,
@@ -1129,14 +1240,22 @@ export const StorageService = {
         if (vehicle.cadManPeriodica) {
           docData.revisaoKm = vehicle.revisaoKm ?? 10000;
           docData.revisaoMes = vehicle.revisaoMes ?? 12;
-          docData.trocaOleoKm = vehicle.trocaOleoKm ?? 10000;
-          docData.trocaOleoMeses = vehicle.trocaOleoMeses ?? 6;
-          if (vehicle.ultimaRevisaoKm != null) docData.ultimaRevisaoKm = vehicle.ultimaRevisaoKm;
-          if (vehicle.ultimaTrocaOleoKm != null) docData.ultimaTrocaOleoKm = vehicle.ultimaTrocaOleoKm;
           docData.proxRevKm =
             vehicle.proxRevKm ?? vehicle.currentOdometer + (vehicle.revisaoKm || 10000);
-          docData.proxTrocaOleoKm =
-            vehicle.proxTrocaOleoKm ?? vehicle.currentOdometer + (vehicle.trocaOleoKm || 10000);
+
+          if (!isEV) {
+            docData.trocaOleoKm = vehicle.trocaOleoKm ?? 10000;
+            docData.trocaOleoMeses = vehicle.trocaOleoMeses ?? 6;
+            if (vehicle.ultimaTrocaOleoKm != null) docData.ultimaTrocaOleoKm = vehicle.ultimaTrocaOleoKm;
+            docData.proxTrocaOleoKm =
+              vehicle.proxTrocaOleoKm ?? vehicle.currentOdometer + (vehicle.trocaOleoKm || 10000);
+          } else {
+            docData.trocaOleoKm = null;
+            docData.trocaOleoMeses = null;
+            docData.ultimaTrocaOleoKm = null;
+            docData.proxTrocaOleoKm = null;
+          }
+          if (vehicle.ultimaRevisaoKm != null) docData.ultimaRevisaoKm = vehicle.ultimaRevisaoKm;
 
           if (vehicle.vehicleType === 'moto') {
             if (vehicle.lubrificarCorrenteKm != null)
@@ -1152,6 +1271,10 @@ export const StorageService = {
             if (vehicle.proxEsticarCorrenteKm != null)
               docData.proxEsticarCorrenteKm = vehicle.proxEsticarCorrenteKm;
           }
+        }
+
+        if (vehicle.customPeriodicMaintenances) {
+          docData.customPeriodicMaintenances = vehicle.customPeriodicMaintenances;
         }
 
         if (vehicle.gastoManutencao != null) docData.gastoManutencao = vehicle.gastoManutencao;
@@ -1181,14 +1304,32 @@ export const StorageService = {
         if (vehicle.id && !vehicle.id.startsWith('veh-')) {
           await withFirestoreTimeout(
             () => setDoc(doc(db, 'users', userEmail, 'veiculos', vehicle.id), docData, { merge: true }),
-            1500
+            6000
           );
         } else {
-          const docRef = await withFirestoreTimeout(
-            () => addDoc(collection(db, 'users', userEmail, 'veiculos'), docData),
-            1500
-          );
-          vehicle.id = docRef.id;
+          // Prevenção contra duplicatas por oscilação de rede: verifica se já existe doc com a mesma placa
+          const vehCol = collection(db, 'users', userEmail, 'veiculos');
+          const existingSnap = await withFirestoreTimeout(() => getDocs(vehCol), 6000).catch(() => null);
+          const norm = normalizePlate(vehicle.plate);
+          const matchedDoc = existingSnap?.docs.find((d) => {
+            const p = normalizePlate(d.data().placa as string);
+            return p && p !== 'SEMPLACA' && p === norm;
+          });
+
+          if (matchedDoc) {
+            await withFirestoreTimeout(
+              () => setDoc(doc(db, 'users', userEmail, 'veiculos', matchedDoc.id), docData, { merge: true }),
+              6000
+            );
+            vehicle.id = matchedDoc.id;
+          } else {
+            const docRef = await withFirestoreTimeout(
+              () => addDoc(vehCol, docData),
+              6000
+            );
+            vehicle.id = docRef.id;
+          }
+
           if (vehicle.photoUrl) {
             await saveAvatarToLocalCache(`vehicle_${vehicle.id}`, vehicle.photoUrl);
           }
@@ -1207,7 +1348,12 @@ export const StorageService = {
 
     const cachedRaw = await AsyncStorage.getItem(STORAGE_KEYS.VEHICLES);
     const vehicles: Vehicle[] = cachedRaw ? JSON.parse(cachedRaw) : [];
-    const index = vehicles.findIndex((v) => v.id === vehicle.id);
+    const normTarget = normalizePlate(vehicle.plate);
+    const index = vehicles.findIndex(
+      (v) =>
+        v.id === vehicle.id ||
+        (normTarget && normTarget !== 'SEMPLACA' && normalizePlate(v.plate) === normTarget)
+    );
     if (index >= 0) {
       vehicles[index] = vehicle;
     } else {
@@ -1215,8 +1361,21 @@ export const StorageService = {
       if (vehicle.isPreferred == null) vehicle.isPreferred = vehicles.length === 0;
       vehicles.push(vehicle);
     }
+
+    // Deduplicação estrita do cache local
+    const finalVehicles: Vehicle[] = [];
+    const seenLocal = new Set<string>();
+    for (const v of vehicles) {
+      const n = normalizePlate(v.plate);
+      if (n && n !== 'SEMPLACA') {
+        if (seenLocal.has(n)) continue;
+        seenLocal.add(n);
+      }
+      finalVehicles.push(v);
+    }
+
     const prefId = await AsyncStorage.getItem(STORAGE_KEYS.PREFERRED_VEHICLE);
-    const sorted = sortVehiclesByOrder(vehicles, prefId);
+    const sorted = sortVehiclesByOrder(finalVehicles, prefId);
     await AsyncStorage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(sorted));
     if (sorted.length > 0 && !prefId) {
       await AsyncStorage.setItem(STORAGE_KEYS.PREFERRED_VEHICLE, sorted[0].id);
@@ -2911,6 +3070,8 @@ export const StorageService = {
             ? 'Diesel'
             : refueling.fuelType === 'gnv'
             ? 'GNV'
+            : refueling.fuelType === 'eletrico'
+            ? 'Elétrico'
             : 'Gasolina';
 
         const effectiveOwner =
@@ -2934,6 +3095,15 @@ export const StorageService = {
           observacao: refueling.notes || refueling.gasStation || '',
           registradoPor: calculatedRefueling.registeredBy || userAttribution,
         };
+
+        if (refueling.rechargeType) firestoreData.tipoRecarga = refueling.rechargeType;
+        if (refueling.kwh != null) firestoreData.kwh = refueling.kwh;
+        if (refueling.pricePerKwh != null) firestoreData.pricePerKwh = refueling.pricePerKwh;
+        if (refueling.batteryInitialPercent != null) firestoreData.percentualInicial = refueling.batteryInitialPercent;
+        if (refueling.batteryFinalPercent != null) firestoreData.percentualFinal = refueling.batteryFinalPercent;
+        if (refueling.netEnergy != null) firestoreData.energiaLiquida = refueling.netEnergy;
+        if (refueling.grossEnergy != null) firestoreData.energiaComPerda = refueling.grossEnergy;
+        if (refueling.energyTariff != null) firestoreData.tarifaEnergia = refueling.energyTariff;
 
         const batch = writeBatch(db);
         const subColRef = collection(
@@ -3256,23 +3426,29 @@ export const StorageService = {
         vehUpdates.ultimoKm = maintenance.odometer;
       }
 
+      const isEV = isElectricVehicle(vehicle);
+
       if (maintenance.category === 'oleo_filtro') {
-        vehicle.ultimaTrocaOleoKm = maintenance.odometer;
-        const oilInterval = vehicle.trocaOleoKm || (vehicle.vehicleType === 'moto' ? 3000 : 10000);
-        vehicle.proxTrocaOleoKm = maintenance.nextDueOdometer || (maintenance.odometer + oilInterval);
-        vehUpdates.ultimaTrocaOleoKm = vehicle.ultimaTrocaOleoKm;
-        vehUpdates.proxTrocaOleoKm = vehicle.proxTrocaOleoKm;
+        if (!isEV) {
+          vehicle.ultimaTrocaOleoKm = maintenance.odometer;
+          const oilInterval = vehicle.trocaOleoKm || (vehicle.vehicleType === 'moto' ? 3000 : 10000);
+          vehicle.proxTrocaOleoKm = maintenance.nextDueOdometer || (maintenance.odometer + oilInterval);
+          vehUpdates.ultimaTrocaOleoKm = vehicle.ultimaTrocaOleoKm;
+          vehUpdates.proxTrocaOleoKm = vehicle.proxTrocaOleoKm;
+        }
       } else if (maintenance.category === 'revisao_geral') {
         vehicle.ultimaRevisaoKm = maintenance.odometer;
         const revInterval = vehicle.revisaoKm || (vehicle.vehicleType === 'moto' ? 6000 : 10000);
-        const oilInterval = vehicle.trocaOleoKm || (vehicle.vehicleType === 'moto' ? 3000 : 10000);
         vehicle.proxRevKm = maintenance.nextDueOdometer || (maintenance.odometer + revInterval);
-        vehicle.ultimaTrocaOleoKm = maintenance.odometer;
-        vehicle.proxTrocaOleoKm = maintenance.odometer + oilInterval;
         vehUpdates.ultimaRevisaoKm = vehicle.ultimaRevisaoKm;
         vehUpdates.proxRevKm = vehicle.proxRevKm;
-        vehUpdates.ultimaTrocaOleoKm = vehicle.ultimaTrocaOleoKm;
-        vehUpdates.proxTrocaOleoKm = vehicle.proxTrocaOleoKm;
+        if (!isEV) {
+          const oilInterval = vehicle.trocaOleoKm || (vehicle.vehicleType === 'moto' ? 3000 : 10000);
+          vehicle.ultimaTrocaOleoKm = maintenance.odometer;
+          vehicle.proxTrocaOleoKm = maintenance.odometer + oilInterval;
+          vehUpdates.ultimaTrocaOleoKm = vehicle.ultimaTrocaOleoKm;
+          vehUpdates.proxTrocaOleoKm = vehicle.proxTrocaOleoKm;
+        }
       } else if (maintenance.category === 'freios') {
         if (maintenance.side?.includes('DIANT')) {
           vehicle.manFreioDiant = maintenance.odometer;
@@ -3294,6 +3470,23 @@ export const StorageService = {
           maintenance.odometer + (vehicle.esticarCorrenteKm || 1500);
         vehUpdates.ultimaEsticarCorrenteKm = vehicle.ultimaEsticarCorrenteKm;
         vehUpdates.proxEsticarCorrenteKm = vehicle.proxEsticarCorrenteKm;
+      }
+
+      if (vehicle.customPeriodicMaintenances && vehicle.customPeriodicMaintenances.length > 0) {
+        const normTitle = maintenance.title.toLowerCase().trim();
+        const customIdx = vehicle.customPeriodicMaintenances.findIndex(
+          (c) => c.title.toLowerCase().trim() === normTitle
+        );
+        if (customIdx >= 0) {
+          const customItem = vehicle.customPeriodicMaintenances[customIdx];
+          const nextDue = maintenance.nextDueOdometer || (maintenance.odometer + customItem.intervalKm);
+          vehicle.customPeriodicMaintenances[customIdx] = {
+            ...customItem,
+            lastKm: maintenance.odometer,
+            nextDueKm: nextDue,
+          };
+          vehUpdates.customPeriodicMaintenances = vehicle.customPeriodicMaintenances;
+        }
       }
 
       await saveVehicleTotalizersToCacheMap(vehicle.id, {
@@ -3503,20 +3696,23 @@ export const StorageService = {
     config: {
       revisaoKm: number;
       revisaoMes: number;
-      trocaOleoKm: number;
-      trocaOleoMeses: number;
+      trocaOleoKm?: number;
+      trocaOleoMeses?: number;
       ultimaRevisaoKm: number;
-      ultimaTrocaOleoKm: number;
+      ultimaTrocaOleoKm?: number;
       lubrificarCorrenteKm?: number;
       ultimaLubCorrenteKm?: number;
       esticarCorrenteKm?: number;
       ultimaEsticarCorrenteKm?: number;
+      customPeriodicMaintenances?: CustomPeriodicMaintenance[];
     }
   ): Promise<Vehicle | null> {
     const userEmail = auth.currentUser?.email;
     const vehicles = await this.getCachedVehicles();
     const vehicle = vehicles.find((v) => v.id === vehicleId);
     if (!vehicle) return null;
+
+    const isEV = isElectricVehicle(vehicle);
 
     let proxRev = config.ultimaRevisaoKm;
     if (config.ultimaRevisaoKm >= config.revisaoKm) {
@@ -3527,29 +3723,61 @@ export const StorageService = {
       proxRev = config.revisaoKm;
     }
 
-    const proxTrocaOleo = config.ultimaTrocaOleoKm + config.trocaOleoKm;
-
     vehicle.cadManPeriodica = true;
     vehicle.revisaoKm = config.revisaoKm;
     vehicle.revisaoMes = config.revisaoMes;
-    vehicle.trocaOleoKm = config.trocaOleoKm;
-    vehicle.trocaOleoMeses = config.trocaOleoMeses;
     vehicle.ultimaRevisaoKm = config.ultimaRevisaoKm;
-    vehicle.ultimaTrocaOleoKm = config.ultimaTrocaOleoKm;
     vehicle.proxRevKm = proxRev;
-    vehicle.proxTrocaOleoKm = proxTrocaOleo;
 
     const firestoreUpdates: Record<string, unknown> = {
       cadManPeriodica: true,
       revisaoKm: config.revisaoKm,
       revisaoMes: config.revisaoMes,
-      trocaOleoKm: config.trocaOleoKm,
-      trocaOleoMeses: config.trocaOleoMeses,
       ultimaRevisaoKm: config.ultimaRevisaoKm,
-      ultimaTrocaOleoKm: config.ultimaTrocaOleoKm,
       proxRevKm: proxRev,
-      proxTrocaOleoKm: proxTrocaOleo,
     };
+
+    if (!isEV && config.trocaOleoKm != null && config.ultimaTrocaOleoKm != null) {
+      const proxTrocaOleo = config.ultimaTrocaOleoKm + config.trocaOleoKm;
+      vehicle.trocaOleoKm = config.trocaOleoKm;
+      vehicle.trocaOleoMeses = config.trocaOleoMeses ?? 6;
+      vehicle.ultimaTrocaOleoKm = config.ultimaTrocaOleoKm;
+      vehicle.proxTrocaOleoKm = proxTrocaOleo;
+
+      firestoreUpdates.trocaOleoKm = config.trocaOleoKm;
+      firestoreUpdates.trocaOleoMeses = config.trocaOleoMeses ?? 6;
+      firestoreUpdates.ultimaTrocaOleoKm = config.ultimaTrocaOleoKm;
+      firestoreUpdates.proxTrocaOleoKm = proxTrocaOleo;
+    } else if (isEV) {
+      delete vehicle.trocaOleoKm;
+      delete vehicle.trocaOleoMeses;
+      delete vehicle.ultimaTrocaOleoKm;
+      delete vehicle.proxTrocaOleoKm;
+
+      firestoreUpdates.trocaOleoKm = null;
+      firestoreUpdates.trocaOleoMeses = null;
+      firestoreUpdates.ultimaTrocaOleoKm = null;
+      firestoreUpdates.proxTrocaOleoKm = null;
+    }
+
+    if (config.customPeriodicMaintenances) {
+      const updatedCustoms: CustomPeriodicMaintenance[] = config.customPeriodicMaintenances.map((c) => {
+        let nextDue = c.nextDueKm;
+        if (!nextDue || nextDue <= 0) {
+          if (c.lastKm != null && c.lastKm > 0) {
+            nextDue = c.lastKm + c.intervalKm;
+          } else {
+            nextDue = vehicle.currentOdometer + c.intervalKm;
+          }
+        }
+        return {
+          ...c,
+          nextDueKm: nextDue,
+        };
+      });
+      vehicle.customPeriodicMaintenances = updatedCustoms;
+      firestoreUpdates.customPeriodicMaintenances = updatedCustoms;
+    }
 
     if (vehicle.vehicleType === 'moto') {
       if (config.lubrificarCorrenteKm && config.lubrificarCorrenteKm > 0) {
@@ -3757,6 +3985,79 @@ export const StorageService = {
     const field = fuelFieldMap[fuelType];
     if (field) {
       await this.saveFuelPrices({ [field]: price });
+    }
+  },
+
+  async getElectricityTariff(): Promise<ElectricityTariff | null> {
+    const userEmail = auth.currentUser?.email;
+    if (userEmail) {
+      try {
+        const docRef = doc(db, 'users', userEmail, 'configuracoes', 'tarifaEnergia');
+        const snap = await withFirestoreTimeout(() => getDoc(docRef), 1500);
+        if (snap.exists()) {
+          const data = snap.data();
+          const tariff: ElectricityTariff = {
+            totalAmount: Number(data.valorTotal ?? data.totalAmount ?? 0),
+            totalKwh: Number(data.kwhTotais ?? data.totalKwh ?? 0),
+            kwhRate: Number(data.tarifaKwh ?? data.kwhRate ?? 0),
+            referenceMonth: (data.mesReferencia as string) || (data.referenceMonth as string) || undefined,
+            updatedAt: (data.atualizadoEm as string) || (data.updatedAt as string) || new Date().toISOString(),
+          };
+          await AsyncStorage.setItem(STORAGE_KEYS.ELECTRICITY_TARIFF, JSON.stringify(tariff));
+          return tariff;
+        }
+      } catch (err) {
+        console.warn('Offline: usando tarifaEnergia do cache local:', err);
+      }
+    }
+
+    try {
+      const cached = await AsyncStorage.getItem(STORAGE_KEYS.ELECTRICITY_TARIFF);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch {}
+
+    return null;
+  },
+
+  async saveElectricityTariff(tariff: ElectricityTariff): Promise<void> {
+    await AsyncStorage.setItem(STORAGE_KEYS.ELECTRICITY_TARIFF, JSON.stringify(tariff));
+
+    let savedOnline = false;
+    const isOnline = await checkOnlineStatus();
+    const userEmail = auth.currentUser?.email;
+    if (isOnline && userEmail) {
+      try {
+        const docRef = doc(db, 'users', userEmail, 'configuracoes', 'tarifaEnergia');
+        await withFirestoreTimeout(
+          () =>
+            setDoc(
+              docRef,
+              {
+                valorTotal: tariff.totalAmount,
+                totalAmount: tariff.totalAmount,
+                kwhTotais: tariff.totalKwh,
+                totalKwh: tariff.totalKwh,
+                tarifaKwh: tariff.kwhRate,
+                kwhRate: tariff.kwhRate,
+                mesReferencia: tariff.referenceMonth || null,
+                referenceMonth: tariff.referenceMonth || null,
+                atualizadoEm: tariff.updatedAt || new Date().toISOString(),
+                updatedAt: tariff.updatedAt || new Date().toISOString(),
+              },
+              { merge: true }
+            ),
+          1500
+        );
+        savedOnline = true;
+      } catch (err) {
+        console.warn('Offline: Falha ao salvar tarifaEnergia no Firestore, enfileirando:', err);
+      }
+    }
+
+    if (userEmail && !savedOnline) {
+      await SyncService.enqueue('SAVE_ELECTRICITY_TARIFF', 'electricityTariff', { tariff });
     }
   },
 

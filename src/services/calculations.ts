@@ -6,6 +6,7 @@ import {
   FuelForecast,
   FuelPrices,
 } from '@/types/vehicle';
+import { isElectricVehicle } from '@/utils/vehicle-type';
 
 export const Calculations = {
   // Estatísticas Gerais do Veículo (compatível com cache offline dos 5 últimos registros + totalizadores persistidos)
@@ -113,6 +114,7 @@ export const Calculations = {
     vehicle?: Vehicle | null
   ): MaintenanceAlert[] {
     const isMoto = vehicle?.vehicleType === 'moto';
+    const isEV = isElectricVehicle(vehicle);
 
     const standardCategories: {
       category: MaintenanceItem['category'];
@@ -122,21 +124,24 @@ export const Calculations = {
       overrideDueKm?: number;
     }[] = [];
 
-    const oilInterval = vehicle?.trocaOleoKm || (isMoto ? 3000 : 10000);
-    standardCategories.push({
-      category: 'oleo_filtro',
-      title: 'Troca de Óleo e Filtro',
-      intervalKm: oilInterval,
-      estimatedCost: isMoto ? 80 : 350,
-      overrideDueKm: vehicle?.proxTrocaOleoKm,
-    });
+    // Veículos 100% elétricos não possuem motor a combustão nem ciclo de troca de óleo
+    if (!isEV) {
+      const oilInterval = vehicle?.trocaOleoKm || (isMoto ? 3000 : 10000);
+      standardCategories.push({
+        category: 'oleo_filtro',
+        title: 'Troca de Óleo e Filtro',
+        intervalKm: oilInterval,
+        estimatedCost: isMoto ? 80 : 350,
+        overrideDueKm: vehicle?.proxTrocaOleoKm,
+      });
+    }
 
     const revInterval = vehicle?.revisaoKm || (isMoto ? 6000 : 10000);
     standardCategories.push({
       category: 'revisao_geral',
-      title: 'Revisão Periódica Completa',
+      title: isEV ? 'Revisão Preventiva (EV)' : 'Revisão Periódica Completa',
       intervalKm: revInterval,
-      estimatedCost: isMoto ? 250 : 650,
+      estimatedCost: isMoto ? 250 : isEV ? 450 : 650,
       overrideDueKm: vehicle?.proxRevKm,
     });
 
@@ -233,6 +238,61 @@ export const Calculations = {
         estimatedCost: std.estimatedCost,
       });
     });
+
+    // Manutenções Periódicas Personalizadas cadastradas pelo usuário (para todos os veículos)
+    if (vehicle?.customPeriodicMaintenances && vehicle.customPeriodicMaintenances.length > 0) {
+      vehicle.customPeriodicMaintenances.forEach((custom) => {
+        if (!custom.intervalKm || custom.intervalKm <= 0) return;
+        let dueKm = 0;
+
+        if (custom.nextDueKm && custom.nextDueKm > 0) {
+          dueKm = custom.nextDueKm;
+        } else if (custom.lastKm != null && custom.lastKm > 0) {
+          dueKm = custom.lastKm + custom.intervalKm;
+        } else {
+          const matchingMnt = maintenances
+            .filter(
+              (m) =>
+                m.isCompleted &&
+                m.title.toLowerCase().trim() === custom.title.toLowerCase().trim()
+            )
+            .sort((a, b) => b.odometer - a.odometer)[0];
+
+          if (matchingMnt?.nextDueOdometer) {
+            dueKm = matchingMnt.nextDueOdometer;
+          } else if (matchingMnt) {
+            dueKm = matchingMnt.odometer + custom.intervalKm;
+          } else {
+            dueKm = Math.ceil(currentKm / custom.intervalKm) * custom.intervalKm;
+          }
+        }
+
+        const kmRemaining = dueKm - currentKm;
+        let status: MaintenanceAlert['status'] = 'ok';
+        const alertThreshold = custom.intervalKm * 0.15;
+        const warningThreshold = custom.intervalKm * 0.30;
+
+        if (kmRemaining <= 0) {
+          status = 'vencido';
+        } else if (kmRemaining <= alertThreshold) {
+          status = 'alerta';
+        } else if (kmRemaining <= warningThreshold) {
+          status = 'atencao';
+        } else {
+          status = 'ok';
+        }
+
+        alerts.push({
+          category: 'outros',
+          title: custom.title,
+          status,
+          currentKm,
+          dueKm,
+          kmRemaining,
+          estimatedCost: custom.estimatedCost || 150,
+        });
+      });
+    }
 
     const order: Record<string, number> = {
       vencido: 0,
@@ -339,7 +399,9 @@ export const Calculations = {
     const prices = refuelings.map((r) => r.pricePerLiter).filter((p) => p > 0);
     const vehicleFuel = vehicle?.fuelType || 'gasolina';
     const latestPriceForFuel = latestFuelPrices
-      ? latestFuelPrices[vehicleFuel] || latestFuelPrices.gasolina
+      ? (typeof (latestFuelPrices as any)[vehicleFuel] === 'number'
+          ? (latestFuelPrices as any)[vehicleFuel]
+          : latestFuelPrices.gasolina)
       : undefined;
 
     const fallbackPricePerLiter =

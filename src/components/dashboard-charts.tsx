@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { Vehicle } from '@/types/vehicle';
 import { Ionicons } from '@expo/vector-icons';
+import { isElectricVehicle } from '@/utils/vehicle-type';
 
 interface DashboardTheme {
   bg: string;
@@ -40,8 +41,34 @@ export function ConsumptionBarChart({
   theme,
   isDark,
 }: ConsumptionBarChartProps) {
+  // Não exibe veículos 100% elétricos no gráfico de média de consumo (km/L)
+  const eligibleVehicles = vehicles.filter((v) => !isElectricVehicle(v));
+
+  if (eligibleVehicles.length === 0) {
+    return (
+      <View style={[styles.chartWrapper, { paddingVertical: 14, alignItems: 'center' }]}>
+        <View
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 18,
+            justifyContent: 'center',
+            alignItems: 'center',
+            backgroundColor: isDark ? 'rgba(6, 182, 212, 0.15)' : '#ECFEFF',
+            marginBottom: 8,
+          }}
+        >
+          <Ionicons name="flash" size={18} color="#06B6D4" />
+        </View>
+        <Text style={[styles.chartFooterText, { color: theme.textMuted, textAlign: 'center', maxWidth: 280 }]}>
+          Veículos 100% elétricos utilizam medição em kWh e não participam do comparativo de consumo em km/L.
+        </Text>
+      </View>
+    );
+  }
+
   // Prepara dados de cada veículo cadastrado
-  const items = vehicles.map((v) => {
+  const items = eligibleVehicles.map((v) => {
     const isSelected = v.id === activeVehicleId;
     const rawVal = isSelected
       ? Number(activeConsumption || v.mediaGeralKmPorLitro || 0)
@@ -221,14 +248,14 @@ export function ConsumptionBarChart({
               ) : activeItem && activeItem.consumption === 0 ? (
                 'Por não ter um segundo abastecimento, o veículo não possui média calculada.'
               ) : (
-                'Comparativo de consumo entre todos os seus veículos cadastrados.'
+                'Comparativo de consumo entre os veículos a combustão da sua frota.'
               )}
             </Text>
           ) : (
             <Text style={[styles.chartFooterText, { color: theme.textMuted }]}>
-              {bestConsumption
+              {activeItem && bestConsumption
                 ? `Melhor registro deste veículo: ${bestConsumption} km/L. Cadastre mais veículos para comparar.`
-                : 'Cadastre outros veículos na Garagem para ver o comparativo de consumo da frota.'}
+                : 'Cadastre outros veículos a combustão na Garagem para ver o comparativo de consumo da frota.'}
             </Text>
           )}
         </View>

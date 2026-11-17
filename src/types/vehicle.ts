@@ -1,4 +1,6 @@
-export type FuelType = 'gasolina' | 'etanol' | 'diesel' | 'gnv';
+export type FuelType = 'gasolina' | 'etanol' | 'diesel' | 'gnv' | 'eletrico';
+
+export type RechargeType = 'eletroposto' | 'residencial';
 
 export type VehicleType = 'carro' | 'moto';
 
@@ -7,7 +9,7 @@ export interface Vehicle {
   name: string; // Ex: "Gol 1.0" ou "Corolla"
   model: string; // Ex: "Volkswagen Gol 1.0"
   brand?: string; // Ex: "Chevrolet", "Volkswagen"
-  plate: string; // Ex: "BRA2E19" ou "JFJ-1254"
+  plate: string; // Ex: "BRA2E19" ou "ABC-1234"
   year: number; // Ex: 2023
   tankCapacity: number; // Em litros (ex: 44)
   currentOdometer: number; // Em km (ex: 32450)
@@ -15,21 +17,26 @@ export interface Vehicle {
   acceptedFuelTypes?: FuelType[]; // Tipos de combustível aceitos (ex: ['gasolina', 'etanol'])
   photoUrl?: string;
   flexEfficiencyRatio?: number; // Padrão 0.70 (70%)
-  
+
   // Datas de cadastro e histórico de transferência
   createdAt?: string; // Data de cadastro original (ex: '2024-05-10')
   transferredAt?: string; // Data de transferência para o usuário atual (ex: '2024-11-08')
   transferredFrom?: string; // E-mail do usuário anterior que realizou a transferência
-  
+
   // Compartilhamento de veículo com múltiplos usuários
   ownerEmail?: string; // E-mail do proprietário original
   isShared?: boolean; // Se o veículo foi compartilhado com o usuário atual (apenas visualização/lançamentos)
   sharedWith?: string[]; // Lista de e-mails com quem o proprietário compartilhou o veículo
   sharedAt?: string; // Data em que o compartilhamento foi realizado
-  
+
   // Campos integrados com o Firestore / app anterior
   vehicleType?: VehicleType;
   engineDisplacement?: number; // Cilindrada em cc
+  batteryCapacity?: number; // Capacidade da bateria em kWh (veículos elétricos)
+  declaredConsumption?: number; // Consumo médio informado de fábrica
+  consumptionUnit?: 'kwh_100km' | 'km_kwh'; // Unidade do consumo informado
+  isElectric?: boolean; // Veículo 100% elétrico
+  isHybrid?: boolean; // Veículo híbrido (combustão + elétrico)
   cadManPeriodica?: boolean;
   revisaoKm?: number;
   revisaoMes?: number;
@@ -50,6 +57,9 @@ export interface Vehicle {
   esticarCorrenteKm?: number;
   ultimaEsticarCorrenteKm?: number;
   proxEsticarCorrenteKm?: number;
+
+  // Manutenções periódicas personalizadas cadastradas pelo usuário (para todos os veículos)
+  customPeriodicMaintenances?: CustomPeriodicMaintenance[];
 
   // Totalizadores agregados de abastecimento (otimização de banco)
   totalGastoAbast?: number;
@@ -82,6 +92,24 @@ export interface Refueling {
   consumptionKmPerLiter?: number; // km/L
   costPerKm?: number; // R$/km
   registeredBy?: string; // Nome/e-mail do usuário que registrou o abastecimento
+
+  // Exclusivo de Veículos Elétricos (Recargas)
+  rechargeType?: RechargeType;
+  kwh?: number; // Quantidade de kWh recarregados
+  pricePerKwh?: number; // R$/kWh
+  batteryInitialPercent?: number; // % inicial da bateria (carregamento residencial)
+  batteryFinalPercent?: number; // % final da bateria (carregamento residencial)
+  netEnergy?: number; // Energia líquida adicionada à bateria (kWh)
+  grossEnergy?: number; // Energia total consumida da rede com perda de 12% (kWh)
+  energyTariff?: number; // Tarifa de energia (R$/kWh) utilizada no cálculo
+}
+
+export interface ElectricityTariff {
+  totalAmount: number; // Valor total da última conta de energia em R$
+  totalKwh: number; // Consumo total da conta em kWh
+  kwhRate: number; // Tarifa calculada em R$/kWh (totalAmount / totalKwh)
+  referenceMonth?: string; // Mês de referência (ex: 'Novembro/2026')
+  updatedAt: string; // ISO date da última atualização
 }
 
 export type MaintenanceCategory =
@@ -99,6 +127,16 @@ export type MaintenanceCategory =
   | 'bateria'
   | 'documentacao' // IPVA, Seguro, Licenciamento
   | 'outros'; // Sem periodicidade
+
+export interface CustomPeriodicMaintenance {
+  id: string; // Identificador único da manutenção periódica customizada
+  title: string; // Descrição informada pelo usuário (ex: "Troca do Fluido da Bateria", "Filtro de Ar de Cabine")
+  intervalKm: number; // A cada quantos km deve ser realizada
+  lastKm?: number; // Quilometragem da última execução
+  nextDueKm?: number; // Próxima quilometragem prevista (lastKm + intervalKm)
+  estimatedCost?: number; // Custo estimado aproximado em R$
+  createdAt?: string; // Data ISO da criação
+}
 
 export interface MaintenanceItem {
   id: string;
@@ -155,5 +193,6 @@ export interface FuelPrices {
   etanol: number;
   diesel: number;
   gnv: number;
+  eletrico?: number;
   updatedAt?: string;
 }

@@ -7,6 +7,7 @@ import { SyncService } from '@/services/sync-service';
 import { MaintenanceItem, Refueling, Vehicle } from '@/types/vehicle';
 import { formatDateToBR } from '@/utils/date';
 import { formatEngineDisplacement } from '@/utils/engine';
+import { isElectricVehicle, isHybridVehicle } from '@/utils/vehicle-type';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
@@ -632,7 +633,7 @@ export default function DashboardScreen() {
                   {vehicle.name}
                 </Text>
                 <Text style={[styles.compactVehicleMeta, { color: theme.textMuted }]}>
-                  {vehicle.model} • {vehicle.plate}{vehicle.engineDisplacement ? ` • ${formatEngineDisplacement(vehicle.engineDisplacement)}` : ''}
+                  {vehicle.model} • {vehicle.plate}{isElectricVehicle(vehicle) ? ' • 100% Elétrico' : isHybridVehicle(vehicle) ? (vehicle.engineDisplacement ? ` • ${formatEngineDisplacement(vehicle.engineDisplacement)}` : ' • Híbrido') : vehicle.engineDisplacement ? ` • ${formatEngineDisplacement(vehicle.engineDisplacement)}` : ''}
                 </Text>
               </View>
               <View style={styles.singleVehicleKmBadge}>
@@ -741,19 +742,36 @@ export default function DashboardScreen() {
                 >
                   <View style={styles.metricHeader}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <View style={[styles.iconCircle, { backgroundColor: theme.accentLight }]}>
-                        <Ionicons name="leaf-outline" size={16} color={theme.accent} />
+                      <View
+                        style={[
+                          styles.iconCircle,
+                          {
+                            backgroundColor: isElectricVehicle(vehicle)
+                              ? 'rgba(6, 182, 212, 0.15)'
+                              : theme.accentLight,
+                          },
+                        ]}
+                      >
+                        <Ionicons
+                          name={isElectricVehicle(vehicle) ? 'flash-outline' : 'leaf-outline'}
+                          size={16}
+                          color={isElectricVehicle(vehicle) ? '#06B6D4' : theme.accent}
+                        />
                       </View>
                       <View>
                         <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
-                          Média de Consumo
+                          {isElectricVehicle(vehicle) ? 'Consumo Médio Informado' : 'Média de Consumo'}
                         </Text>
                         <Text style={[styles.metricSub, { color: theme.textMuted }]}>
-                          {stats.bestConsumption
-                            ? `Melhor: ${stats.bestConsumption} km/L`
-                            : stats.averageConsumption > 0
-                              ? 'Baseado em tanques cheios'
-                              : 'Aguardando 2º abastecimento'}
+                          {isElectricVehicle(vehicle)
+                            ? vehicle.consumptionUnit === 'km_kwh'
+                              ? 'Quilômetros por cada 1 kWh'
+                              : 'kWh consumidos a cada 100 km'
+                            : stats.bestConsumption
+                              ? `Melhor: ${stats.bestConsumption} km/L`
+                              : stats.averageConsumption > 0
+                                ? 'Baseado em tanques cheios'
+                                : 'Aguardando 2º abastecimento'}
                         </Text>
                       </View>
                     </View>
@@ -761,12 +779,33 @@ export default function DashboardScreen() {
                       style={[
                         styles.metricBigValue,
                         {
-                          color: stats.averageConsumption > 0 ? theme.accent : theme.textMuted,
-                          fontSize: stats.averageConsumption > 0 ? 20 : 16,
+                          color: isElectricVehicle(vehicle)
+                            ? vehicle.declaredConsumption
+                              ? '#06B6D4'
+                              : theme.textMuted
+                            : stats.averageConsumption > 0
+                              ? theme.accent
+                              : theme.textMuted,
+                          fontSize: (isElectricVehicle(vehicle)
+                            ? vehicle.declaredConsumption
+                            : stats.averageConsumption > 0)
+                            ? 20
+                            : 16,
                         },
                       ]}
                     >
-                      {stats.averageConsumption > 0 ? (
+                      {isElectricVehicle(vehicle) ? (
+                        vehicle.declaredConsumption ? (
+                          <>
+                            {vehicle.declaredConsumption}{' '}
+                            <Text style={[styles.metricUnit, { color: '#06B6D4' }]}>
+                              {vehicle.consumptionUnit === 'km_kwh' ? 'km/kWh' : 'kWh/100km'}
+                            </Text>
+                          </>
+                        ) : (
+                          'Não informado'
+                        )
+                      ) : stats.averageConsumption > 0 ? (
                         <>
                           {stats.averageConsumption} <Text style={styles.metricUnit}>km/L</Text>
                         </>
@@ -776,7 +815,7 @@ export default function DashboardScreen() {
                     </Text>
                   </View>
 
-                  {stats.averageConsumption === 0 && (
+                  {!isElectricVehicle(vehicle) && stats.averageConsumption === 0 && (
                     <View
                       style={[
                         styles.noticeBanner,
@@ -789,6 +828,23 @@ export default function DashboardScreen() {
                       <Ionicons name="information-circle-outline" size={16} color="#D97706" />
                       <Text style={[styles.noticeBannerText, { color: isDark ? '#FCD34D' : '#92400E' }]}>
                         Por não ter um segundo abastecimento, este veículo ainda não possui média calculada.
+                      </Text>
+                    </View>
+                  )}
+
+                  {isElectricVehicle(vehicle) && (
+                    <View
+                      style={[
+                        styles.noticeBanner,
+                        {
+                          backgroundColor: isDark ? 'rgba(6, 182, 212, 0.12)' : '#ECFEFF',
+                          borderColor: isDark ? 'rgba(6, 182, 212, 0.25)' : '#A5F3FC',
+                        },
+                      ]}
+                    >
+                      <Ionicons name="information-circle-outline" size={16} color="#06B6D4" />
+                      <Text style={[styles.noticeBannerText, { color: isDark ? '#A5F3FC' : '#0E7490' }]}>
+                        Veículos 100% elétricos utilizam medição em kWh e não participam do gráfico comparativo de consumo em km/L.
                       </Text>
                     </View>
                   )}
@@ -827,8 +883,12 @@ export default function DashboardScreen() {
                         </Text>
                         <Text style={[styles.metricSub, { color: theme.textMuted }]}>
                           {stats.averageCostPerKm > 0
-                            ? 'Combustível rodado'
-                            : 'Aguardando 2º abastecimento'}
+                            ? isElectricVehicle(vehicle)
+                              ? 'Energia elétrica rodada'
+                              : 'Combustível rodado'
+                            : isElectricVehicle(vehicle)
+                              ? 'Aguardando 2ª recarga'
+                              : 'Aguardando 2º abastecimento'}
                         </Text>
                       </View>
                     </View>
@@ -864,7 +924,7 @@ export default function DashboardScreen() {
                   />
                 </View>
 
-                {/* 3. CARD TOTAL ABASTECIDO */}
+                {/* 3. CARD TOTAL ABASTECIDO / RECARREGADO */}
                 <TouchableOpacity
                   style={[
                     styles.dashboardCard,
@@ -875,15 +935,30 @@ export default function DashboardScreen() {
                 >
                   <View style={styles.metricHeader}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <View style={[styles.iconCircle, { backgroundColor: theme.accentLight }]}>
-                        <Ionicons name="water-outline" size={16} color={theme.accent} />
+                      <View
+                        style={[
+                          styles.iconCircle,
+                          {
+                            backgroundColor: isElectricVehicle(vehicle)
+                              ? 'rgba(6, 182, 212, 0.15)'
+                              : theme.accentLight,
+                          },
+                        ]}
+                      >
+                        <Ionicons
+                          name={isElectricVehicle(vehicle) ? 'flash-outline' : 'water-outline'}
+                          size={16}
+                          color={isElectricVehicle(vehicle) ? '#06B6D4' : theme.accent}
+                        />
                       </View>
                       <View>
                         <Text style={[styles.metricLabel, { color: theme.textMuted }]}>
-                          Total Abastecido
+                          {isElectricVehicle(vehicle) ? 'Total Recarregado' : 'Total Abastecido'}
                         </Text>
                         <Text style={[styles.metricSub, { color: theme.textMuted }]}>
-                          {stats.totalLiters.toFixed(1)} L em {stats.refuelingsCount} abastecimento(s)
+                          {isElectricVehicle(vehicle)
+                            ? `${stats.totalLiters.toFixed(1)} kWh em ${stats.refuelingsCount} recarga(s)`
+                            : `${stats.totalLiters.toFixed(1)} L em ${stats.refuelingsCount} abastecimento(s)`}
                         </Text>
                       </View>
                     </View>
@@ -1057,15 +1132,17 @@ export default function DashboardScreen() {
               </View>
             )}
 
-            {/* ÚLTIMO ABASTECIMENTO REGISTRADO */}
+            {/* ÚLTIMO ABASTECIMENTO / ÚLTIMA RECARGA REGISTRADA */}
             {lastRefueling && (
               <View style={styles.sectionContainer}>
                 <View style={styles.sectionHeader}>
                   <Text style={[styles.sectionTitle, { color: theme.text }]}>
-                    Último Abastecimento
+                    {isElectricVehicle(vehicle) ? 'Última Recarga' : 'Último Abastecimento'}
                   </Text>
                   <TouchableOpacity onPress={() => router.push('/abastecimentos')}>
-                    <Text style={[styles.sectionLink, { color: theme.accent }]}>Histórico</Text>
+                    <Text style={[styles.sectionLink, { color: isElectricVehicle(vehicle) ? '#06B6D4' : theme.accent }]}>
+                      Histórico
+                    </Text>
                   </TouchableOpacity>
                 </View>
 
@@ -1078,14 +1155,26 @@ export default function DashboardScreen() {
                   <View style={styles.historyRow}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                       <View
-                        style={[styles.fuelIconBadge, { backgroundColor: theme.accentLight }]}
+                        style={[
+                          styles.fuelIconBadge,
+                          {
+                            backgroundColor: isElectricVehicle(vehicle)
+                              ? 'rgba(6, 182, 212, 0.15)'
+                              : theme.accentLight,
+                          },
+                        ]}
                       >
-                        <Ionicons name="water" size={18} color={theme.accent} />
+                        <Ionicons
+                          name={isElectricVehicle(vehicle) ? 'flash' : 'water'}
+                          size={18}
+                          color={isElectricVehicle(vehicle) ? '#06B6D4' : theme.accent}
+                        />
                       </View>
                       <View>
                         <Text style={[styles.historyTitle, { color: theme.text }]}>
-                          {lastRefueling.fuelType.toUpperCase()} •{' '}
-                          {lastRefueling.liters.toFixed(2)} L
+                          {isElectricVehicle(vehicle)
+                            ? `ELÉTRICO • ${(lastRefueling.kwh ?? lastRefueling.liters).toFixed(2)} kWh`
+                            : `${lastRefueling.fuelType.toUpperCase()} • ${lastRefueling.liters.toFixed(2)} L`}
                         </Text>
                         <Text style={[styles.historySubtitle, { color: theme.textMuted }]}>
                           {formatDateToBR(lastRefueling.date)} •{' '}
@@ -1097,10 +1186,18 @@ export default function DashboardScreen() {
                       <Text style={[styles.historyAmount, { color: theme.text }]}>
                         R$ {lastRefueling.totalAmount.toFixed(2)}
                       </Text>
-                      {lastRefueling.consumptionKmPerLiter && (
-                        <Text style={[styles.historyKmPerLiter, { color: theme.accent }]}>
-                          {lastRefueling.consumptionKmPerLiter} km/L
-                        </Text>
+                      {isElectricVehicle(vehicle) ? (
+                        lastRefueling.costPerKm ? (
+                          <Text style={[styles.historyKmPerLiter, { color: '#06B6D4' }]}>
+                            R$ {lastRefueling.costPerKm.toFixed(2)} /km
+                          </Text>
+                        ) : null
+                      ) : (
+                        lastRefueling.consumptionKmPerLiter ? (
+                          <Text style={[styles.historyKmPerLiter, { color: theme.accent }]}>
+                            {lastRefueling.consumptionKmPerLiter} km/L
+                          </Text>
+                        ) : null
                       )}
                     </View>
                   </View>
